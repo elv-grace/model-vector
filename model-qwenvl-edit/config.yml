@@ -1,0 +1,12 @@
+storage:
+  # path to the embedding model weights (relative -> resolved to the config file's
+  # directory by config.py). Lives next to the package code under embedding/.
+  embedder_path: embedding/Qwen3-VL-Embedding-8B
+
+# GPU is auto-detected at runtime (torch.cuda.is_available); 
+# advisory only, matching the other model-* taggers.
+device: cuda
+
+# runtime tunables (fps, max_frames, max_length, instruction, segment_length_s)
+# are defined in run.py's RuntimeConfig and injected per-request via `--params`.
+# Details in the README "Runtime parameters" table.

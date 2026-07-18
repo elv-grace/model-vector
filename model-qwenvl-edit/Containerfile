@@ -1,0 +1,36 @@
+FROM continuumio/miniconda3:latest
+WORKDIR /elv
+
+# Qwen3-VL / transformers>=4.57 / torch 2.8 require Python 3.11+
+RUN conda create -n mlpod python=3.11 -y
+
+# ffmpeg provides the ffprobe/ffmpeg CLIs used by common_ml.video_processing,
+# and the codecs decord/PyAV decode video with. build-essential for any source builds.
+RUN apt-get update && apt-get install -y build-essential ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Create the SSH directory and set correct permissions
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
+
+# Add GitHub to known_hosts to bypass host verification (common-ml is a git dependency)
+RUN ssh-keyscan -t rsa github.com >> /root/.ssh/known_hosts
+
+# The torch 2.8 pip wheels bundle their own CUDA runtime, so no host CUDA toolkit
+# install is needed; the container just needs the NVIDIA driver + container toolkit
+# at run time (--device nvidia.com/gpu=...).
+
+# Install dependencies before copying source so the heavy dependency layer is cached.
+# `pip install .` installs the dependencies (incl. common-ml from git); the tagger
+# code itself runs from the source copied below (WORKDIR is on sys.path).
+COPY setup.py .
+RUN mkdir -p embedding
+RUN /opt/conda/envs/mlpod/bin/pip install .
+
+# Model weights (synced into embedding/Qwen3-VL-Embedding-8B by build.sh) are large
+# and rarely change -> copy before the code so code edits don't recopy 16GB.
+COPY embedding/Qwen3-VL-Embedding-8B ./embedding/Qwen3-VL-Embedding-8B
+
+# Source code last (changes most often).
+COPY embedding/__init__.py embedding/model.py embedding/qwen3_vl_embedding.py ./embedding/
+COPY config.yml run.py config.py ./
+
+ENTRYPOINT ["/opt/conda/envs/mlpod/bin/python", "-u", "run.py"]

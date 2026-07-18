@@ -1,0 +1,8 @@
+# model weights live next to the code but must not be committed (16GB); synced by build.sh
+embedding/Qwen3-VL-Embedding-8B/
+models/*
+.cache
+tags/*
+test_output/*
+__pycache__
+*.egg-info
