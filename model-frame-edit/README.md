@@ -21,8 +21,19 @@ For each sampled frame the model emits a single `Vector` (via `common_ml`'s
 - **`box`:** the whole frame (`{x1:0, y1:0, x2:1, y2:1}`) — the model embeds the entire
   image, not a sub-region.
 
-Weights are pulled from the HuggingFace hub at load time; the container bakes them into
-its HF cache at build time so no network is hit per request.
+## Weights
+
+Weights are **not** baked into the image. `Salesforce/blip2-itm-vit-g` (set by
+`model.model_id` in `config.yml`) is pulled from the HuggingFace hub the **first time the
+model loads**, into the container's HF cache at `HF_HOME=/elv/.hf_cache`. Mount a
+persistent host volume there (see **Build & run**) so the download happens **once** and is
+reused across container runs.
+
+For **reproducibility**, `config.yml` pins the hub snapshot to a specific commit via
+`model.revision` (threaded into `from_pretrained` for both the model and the processor).
+Set `revision: null` to track the latest commit on the default branch. To use a
+local/offline copy, set `model_id` to an absolute path to a mounted weights directory
+(`from_pretrained` accepts either; `revision` is ignored for local paths).
 
 ## Runtime parameters
 
@@ -39,8 +50,23 @@ the tagger runtime (`run_default`), not by this config.
 ## Build & run
 
 ```bash
-make build          # or: ./build.sh   (bakes the weights into the image)
+make build          # or: ./build.sh   (no weights needed at build time)
 ```
+
+Mount a persistent HF cache at `/elv/.hf_cache` so the weights download once (first run)
+and are reused afterwards:
+
+```bash
+podman run --rm \
+  --volume=$(pwd)/.hf_cache:/elv/.hf_cache \
+  --network host --device nvidia.com/gpu=0 \
+  blip2-frame ...
+```
+
+- The **first** run downloads `blip2-itm-vit-g` from the hub into `.hf_cache/` on the
+  host; subsequent runs load straight from that cache.
+- Add `--env HF_HUB_OFFLINE=1` to force fully-offline loads once cached, or
+  `--env HF_TOKEN=<token>` for gated/rate-limited pulls.
 
 The container reads file paths on stdin and writes tags (`.jsonl`) to `--output-path`,
 per the Eluvio tagging runtime (see `common_ml.tagging.run_helpers.run_default`).

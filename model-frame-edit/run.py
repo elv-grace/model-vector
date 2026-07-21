@@ -17,6 +17,10 @@ if __name__ == '__main__':
     params = from_dict(RuntimeConfig, data=params)
 
     # One FrameVector per sampled frame
-    model = FeatureExtractor(cfg=params, model_id=config["model"]["model_id"])
+    model = FeatureExtractor(
+        cfg=params,
+        model_id=config["model"]["model_id"],
+        revision=config["model"].get("revision"),
+    )
 
     run_default(model)

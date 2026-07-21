@@ -149,3 +149,53 @@ def test_unsupported_pooling_raises_before_loading():
     # the guard fires before any weight download, so this needs no model
     with pytest.raises(NotImplementedError):
         FeatureExtractor(cfg=RuntimeConfig(pooling="tokens"))
+
+
+# ---------------------------------------------------------------------------
+# revision pinning: threaded into both from_pretrained calls (no weights loaded)
+# ---------------------------------------------------------------------------
+
+def _patch_from_pretrained(monkeypatch) -> dict:
+    """Replace Blip2Processor / Blip2ForImageTextRetrieval with fakes that record the
+    `revision` passed to from_pretrained, so the real __init__ runs without a download."""
+    captured = {}
+
+    class _FakeProcessor:
+        @classmethod
+        def from_pretrained(cls, model_id, revision=None):
+            captured["processor_revision"] = revision
+            return cls()
+
+    class _FakeModel:
+        @classmethod
+        def from_pretrained(cls, model_id, revision=None, dtype=None):
+            captured["model_revision"] = revision
+            return cls()
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+    monkeypatch.setattr("blip_frame.model.Blip2Processor", _FakeProcessor)
+    monkeypatch.setattr("blip_frame.model.Blip2ForImageTextRetrieval", _FakeModel)
+    return captured
+
+
+def test_revision_threaded_to_model_and_processor(monkeypatch):
+    captured = _patch_from_pretrained(monkeypatch)
+
+    FeatureExtractor(cfg=RuntimeConfig(), model_id="Salesforce/blip2-itm-vit-g", revision="cafebabe")
+
+    assert captured["processor_revision"] == "cafebabe"
+    assert captured["model_revision"] == "cafebabe"
+
+
+def test_revision_defaults_to_none(monkeypatch):
+    captured = _patch_from_pretrained(monkeypatch)
+
+    FeatureExtractor(cfg=RuntimeConfig(), model_id="Salesforce/blip2-itm-vit-g")
+
+    assert captured["processor_revision"] is None
+    assert captured["model_revision"] is None

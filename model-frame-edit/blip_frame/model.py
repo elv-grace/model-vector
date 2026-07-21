@@ -33,6 +33,7 @@ class FeatureExtractor(FrameModel):
         self,
         cfg: RuntimeConfig,
         model_id: str = DEFAULT_MODEL_ID,
+        revision: Optional[str] = None,  # hub commit to pin; None -> default branch. Ignored for local paths.
         dtype: Optional[torch.dtype] = None,  # None -> auto (bf16/fp16 on GPU, fp32 on CPU)
     ) -> None:
         self.config = cfg
@@ -53,10 +54,15 @@ class FeatureExtractor(FrameModel):
             if dtype is None:
                 dtype = torch.float32  # half precision is unstable / slow on CPU
         self.dtype = dtype
-        logger.info(f"loading {model_id} (dtype={self.dtype})")
+        logger.info(f"loading {model_id} (revision={revision}, dtype={self.dtype})")
 
-        self.processor = Blip2Processor.from_pretrained(model_id)
-        self.model = Blip2ForImageTextRetrieval.from_pretrained(model_id, dtype=self.dtype).to(self.device)
+        # revision pins both the processor and the model to the same hub commit so the
+        # whole snapshot is reproducible. Pulled from the hub into HF_HOME on first load
+        # and reused from that (mountable) cache afterwards.
+        self.processor = Blip2Processor.from_pretrained(model_id, revision=revision)
+        self.model = Blip2ForImageTextRetrieval.from_pretrained(
+            model_id, revision=revision, dtype=self.dtype
+        ).to(self.device)
         self.model.eval()
 
     def tag_frame(self, img: np.ndarray) -> List[FrameVector]:
