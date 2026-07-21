@@ -177,6 +177,7 @@ class Qwen3VLEmbedder():
         fps: float = FPS,
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Represent the user's input.",
+        revision: Optional[str] = None,  # hub commit to pin (model + processor); None -> default branch
         **kwargs
     ):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -190,11 +191,13 @@ class Qwen3VLEmbedder():
 
         self.default_instruction = default_instruction
 
+        # revision pins both the model and the processor to the same hub commit so the
+        # whole snapshot (weights + config + tokenizer/processor) is reproducible.
         self.model = Qwen3VLForEmbedding.from_pretrained(
-            model_name_or_path, trust_remote_code=True, **kwargs
+            model_name_or_path, trust_remote_code=True, revision=revision, **kwargs
         ).to(device)
         self.processor = Qwen3VLProcessor.from_pretrained(
-            model_name_or_path, padding_side='right'
+            model_name_or_path, padding_side='right', revision=revision
         )
         self.model.eval()
 

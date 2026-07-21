@@ -22,6 +22,7 @@ class QwenVLVideoEmbedder(AVModel):
     def __init__(
         self,
         embedder_path: str,
+        revision: Optional[str] = None,  # hub commit to pin; None -> default branch. Ignored for local paths.
         fps: float = 1.0,
         max_frames: int = 64,
         max_length: int = 8192,
@@ -47,6 +48,7 @@ class QwenVLVideoEmbedder(AVModel):
 
         self.embedder = Qwen3VLEmbedder(
             model_name_or_path=embedder_path,
+            revision=revision,
             dtype=dtype,
             fps=fps,
             max_frames=max_frames,

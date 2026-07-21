@@ -243,6 +243,27 @@ def test_explicit_dtype_is_respected(monkeypatch):
     assert captured["dtype"] is torch.float32
 
 
+# -------------------- revision pinning (constructor) --------------------
+
+def test_revision_forwarded_to_embedder(monkeypatch):
+    # the configured hub commit is threaded down into the embedder (which pins both
+    # the model and the processor from_pretrained calls to it)
+    captured = _capture_embedder(monkeypatch)
+
+    QwenVLVideoEmbedder(embedder_path="Qwen/Qwen3-VL-Embedding-8B", revision="deadbeef")
+
+    assert captured["revision"] == "deadbeef"
+
+
+def test_revision_defaults_to_none(monkeypatch):
+    # no revision -> None -> the embedder tracks the default branch
+    captured = _capture_embedder(monkeypatch)
+
+    QwenVLVideoEmbedder(embedder_path="Qwen/Qwen3-VL-Embedding-8B")
+
+    assert captured.get("revision") is None
+
+
 # -------------------- tag(): empty / all-failed / collapsed windows --------------------
 
 def test_tag_empty_embedding_emits_nothing(monkeypatch):

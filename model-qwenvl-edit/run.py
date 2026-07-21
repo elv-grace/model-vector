@@ -39,7 +39,8 @@ if __name__ == "__main__":
     # one vector per input video
     # or if segment_length_s is provided, then one vector per segment of the input video
     model = QwenVLVideoEmbedder(
-        embedder_path=config["storage"]["embedder_path"],
+        embedder_path=config["model"]["embedder_id"],
+        revision=config["model"].get("revision"),
         fps=params.fps,
         max_frames=params.max_frames,
         max_length=params.max_length,
