@@ -1,0 +1,6 @@
+[submodule "model-qwenvl-edit/buildscripts"]
+	path = model-qwenvl-edit/buildscripts
+	url = git@github.com:qluvio/buildscripts
+[submodule "model-frame-edit/buildscripts"]
+	path = model-frame-edit/buildscripts
+	url = git@github.com:qluvio/buildscripts

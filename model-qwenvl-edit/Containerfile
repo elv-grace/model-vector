@@ -25,10 +25,12 @@ COPY setup.py .
 RUN mkdir -p embedding
 RUN /opt/conda/envs/mlpod/bin/pip install .
 
-# Qwen3-VL-Embedding-8B weights is pulled from the HuggingFace hub 
+# Qwen3-VL-Embedding-8B weights is pulled from the HuggingFace hub
 # the first time the model loads and written to a cache.
-# Mount a host volume at HF_HOME (see README "Run") so the ~16GB download 
-# happens once and is reused across container runs.
+# Mount a persistent volume at HF_HOME (see README "Run") so the ~16GB download
+# happens once and is reused across container runs. 
+# Uses a podman named volume (`hf_cache`), shared with model-frame-edit (a host bind mount works too).
+# Run with `--volume=hf_cache:/elv/.hf_cache` to declare the intended mound point for reusability.
 ENV HF_HOME=/elv/.hf_cache
 RUN mkdir -p /elv/.hf_cache
 VOLUME ["/elv/.hf_cache"]

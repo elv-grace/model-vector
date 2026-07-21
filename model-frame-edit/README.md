@@ -26,8 +26,8 @@ For each sampled frame the model emits a single `Vector` (via `common_ml`'s
 Weights are **not** baked into the image. `Salesforce/blip2-itm-vit-g` (set by
 `model.model_id` in `config.yml`) is pulled from the HuggingFace hub the **first time the
 model loads**, into the container's HF cache at `HF_HOME=/elv/.hf_cache`. Mount a
-persistent host volume there (see **Build & run**) so the download happens **once** and is
-reused across container runs.
+persistent volume there — the `hf_cache` podman named volume (see **Build & run**) — so
+the download happens **once** and is reused across container runs.
 
 For **reproducibility**, `config.yml` pins the hub snapshot to a specific commit via
 `model.revision` (threaded into `from_pretrained` for both the model and the processor).
@@ -54,22 +54,36 @@ make build          # or: ./build.sh   (no weights needed at build time)
 ```
 
 Mount a persistent HF cache at `/elv/.hf_cache` so the weights download once (first run)
-and are reused afterwards:
+and are reused afterwards. Use a podman **named volume** for the cache (podman-managed,
+avoids rootless uid-mapping issues) — create it once:
+
+```bash
+podman volume create hf_cache
+```
+
+The same `hf_cache` volume is shared with `model-qwenvl-edit`; HF keys downloads by repo
+id, so the two models coexist in it without collision. Then run:
 
 ```bash
 podman run --rm \
-  --volume=$(pwd)/.hf_cache:/elv/.hf_cache \
-  --network host --device nvidia.com/gpu=0 \
-  blip2-frame ...
+  --volume=$(pwd)/test-files:/elv/test:ro \
+  --volume=$(pwd)/tags:/elv/tags:U \
+  --volume=hf_cache:/elv/.hf_cache \
+  --network host --device nvidia.com/gpu=3 \
+  blip2-frame test/1.mp4
 ```
 
-- The **first** run downloads `blip2-itm-vit-g` from the hub into `.hf_cache/` on the
-  host; subsequent runs load straight from that cache.
+- `test/` and `tags/` are **bind mounts** so input frames (`:ro`) and output JSONL
+  live directly on the host; only the write-heavy weights cache is a named volume. The
+  container reads file paths on stdin and writes tags (`.jsonl`) to `--output-path`, per
+  the Eluvio tagging runtime (see `common_ml.tagging.run_helpers.run_default`).
+- The **first** run downloads `blip2-itm-vit-g` from the hub into the `hf_cache` volume;
+  subsequent runs load straight from that cache.
 - Add `--env HF_HUB_OFFLINE=1` to force fully-offline loads once cached, or
   `--env HF_TOKEN=<token>` for gated/rate-limited pulls.
-
-The container reads file paths on stdin and writes tags (`.jsonl`) to `--output-path`,
-per the Eluvio tagging runtime (see `common_ml.tagging.run_helpers.run_default`).
+- Swap the cache mount for a bind mount
+  (`--volume=$(pwd)/.hf_cache:/elv/.hf_cache`) if a host directory is preferred instead; add `:U` if rootless podman writes it
+  with a mapped uid you can't read back.
 
 ## Tests
 

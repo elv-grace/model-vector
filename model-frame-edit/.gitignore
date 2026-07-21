@@ -1,7 +1,11 @@
 # blip_frame/LAVIS/ removed to use blip2 model from HuggingFace transformers instead
+# .hf_cache/ only appears with the bind-mount fallback (the named-volume path stores it
+# under podman's graphroot); ignore it either way.
+.hf_cache/
 models/*
 .cache
 tags/*
+test-files/*
 test_output/*
 __pycache__
 *.egg-info

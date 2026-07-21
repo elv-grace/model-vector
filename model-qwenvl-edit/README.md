@@ -1,4 +1,4 @@
-# model-qwenvl-edit
+# model-qwenvl-edit - Qwen3-VL-Embedding video embedder
 
 A video-embedding tagger for the Eluvio tagging runtime. It embeds each input
 video into a single vector using **Qwen3-VL-Embedding-8B**, and emits it as a
@@ -87,21 +87,34 @@ ssh-add            # so the container build can fetch common-ml over SSH
 ## Run
 
 Mount a persistent HF cache at `/elv/.hf_cache` so the weights download once (first run)
-and are reused afterwards:
+and are reused afterwards. Use a podman **named volume** for the cache (podman-managed,
+avoids rootless uid-mapping issues) — create it once:
+
+```
+podman volume create hf_cache
+```
+
+The same `hf_cache` volume is shared with `model-frame-edit`; HF keys downloads by repo
+id, so the two models coexist in it without collision. Then run:
 
 ```
 podman run --rm \
-  --volume=$(pwd)/test:/elv/test:ro \
-  --volume=$(pwd)/tags:/elv/tags \
-  --volume=$(pwd)/.hf_cache:/elv/.hf_cache \
-  --network host --device nvidia.com/gpu=0 \
+  --volume=$(pwd)/test-files:/elv/test:ro \
+  --volume=$(pwd)/tags:/elv/tags:U \
+  --volume=hf_cache:/elv/.hf_cache \
+  --network host --device nvidia.com/gpu=3 \
   qwenvl-embedding test/1.mp4
 ```
 
-- The **first** run downloads `Qwen/Qwen3-VL-Embedding-8B` from the hub into
-  `.hf_cache/` on the host (~16GB); subsequent runs load straight from that cache.
+- `test/` and `tags/` stay **bind mounts** so input videos (`:ro`) and output JSONL live
+  directly on the host; only the write-heavy weights cache is a named volume.
+- The **first** run downloads `Qwen/Qwen3-VL-Embedding-8B` from the hub into the
+  `hf_cache` volume (~16GB); subsequent runs load straight from that cache.
 - For a **gated** or rate-limited download, pass a token: `--env HF_TOKEN=<token>`.
 - To run fully offline once cached, add `--env HF_HUB_OFFLINE=1`.
+- Swap the cache mount for a bind mount
+  (`--volume=$(pwd)/.hf_cache:/elv/.hf_cache`) if host directory is preferred; add `:U` if rootless podman writes it
+  with a mapped uid you can't read back.
 
 Output `vector` records are written to the runtime's `--output-path` JSONL.
 
