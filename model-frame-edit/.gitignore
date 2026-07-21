@@ -1,0 +1,7 @@
+# blip_frame/LAVIS/ removed to use blip2 model from HuggingFace transformers instead
+models/*
+.cache
+tags/*
+test_output/*
+__pycache__
+*.egg-info
