@@ -1,0 +1,20 @@
+model:
+  # HuggingFace hub repo id for the embedding model. Pulled from the hub at load
+  # time (no weights are baked into the image). Mount a persistent HF cache so the
+  # download happens once and is reused across container runs (can see README "Run").
+  # May also be an absolute path to a local/mounted weights directory (from_pretrained
+  # accepts either). Not path-resolved by config.py, so a hub id stays intact.
+  embedder_id: Qwen/Qwen3-VL-Embedding-8B
+  # Pin the hub snapshot to a specific commit for reproducibility, so a runtime pull
+  # always fetches the exact same weights/config/tokenizer regardless of later hub
+  # updates. Set to null to track the latest commit on the default branch (`main`).
+  # Ignored when embedder_id is a local path.
+  revision: 2c4565515e0f265c6511776e7193b22c0968ddc7
+
+# GPU is auto-detected at runtime (torch.cuda.is_available);
+# advisory only, matching the other model-* taggers.
+device: cuda
+
+# runtime tunables (fps, max_frames, max_length, instruction, segment_length_s)
+# are defined in run.py's RuntimeConfig and injected per-request via `--params`.
+# Details in the README "Runtime parameters" table.

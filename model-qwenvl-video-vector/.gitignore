@@ -1,0 +1,12 @@
+# model weights now pulled and cached at runtime. not committed (16GB) and no longer synced by build.sh
+# .hf_cache/ only appears with the bind-mount fallback (named-volume path stores it under
+# podman's graphroot); ignore it either way.
+.hf_cache/
+embedding/Qwen3-VL-Embedding-8B/
+models/*
+.cache
+tags/*
+test-files/*
+test-output/*
+__pycache__
+*.egg-info

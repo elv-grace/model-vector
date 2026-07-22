@@ -1,0 +1,21 @@
+# GPU is auto-detected at runtime (torch.cuda.is_available); advisory only, matching
+# the other model-* taggers.
+device: cuda
+
+model:
+  # Pulled from the HuggingFace hub the first time the model loads, into the container's
+  # HF cache at HF_HOME=/elv/.hf_cache. Mount a persistent volume there (see README
+  # "Run") so the download happens once and is reused across runs.
+  #
+  # blip2-itm-vit-g = ViT-g + Q-Former + image/text projection heads (no LLM): the
+  # retrieval checkpoint whose 256-d image embeddings are contrastively aligned to text,
+  # so the same vectors serve image->image and text->image search.
+  model_id: Salesforce/blip2-itm-vit-g
+  # Pin the hub snapshot to a specific commit for reproducibility (threaded into
+  # from_pretrained for both the model and the processor). Set to null to track the
+  # latest commit on the default branch. Ignored when model_id is a local path.
+  revision: 520bf73fd0ef6ccce791cd3f06908040aef2d8cc
+
+# runtime tunables (normalize, pooling) are defined in blip_frame/config.py's
+# RuntimeConfig and injected per-request via `--params`. Frame sampling rate (fps) is
+# handled generically by the tagger runtime. (README "Runtime parameters" table.)

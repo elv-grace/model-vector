@@ -1,0 +1,7 @@
+{
+  "vendor": "Eluvio, Inc.",
+  "source": "git@github.com:elv-grace/model-vector.git",
+  "revision": "3f6922e1c274c870d1480a2e1d6dc30a4084b786",
+  "branch": "main-dirty",
+  "build_info": "mltrain on Linux ai-04-contentfabric-io 6.8.0-124-generic #124-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 13:00:45 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux"
+}
