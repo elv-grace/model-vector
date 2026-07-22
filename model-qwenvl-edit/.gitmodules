@@ -1,3 +1,0 @@
-[submodule "buildscripts"]
-	path = buildscripts
-	url = https://github.com/qluvio/buildscripts.git
