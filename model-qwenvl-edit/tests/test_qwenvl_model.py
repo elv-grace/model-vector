@@ -134,7 +134,7 @@ def test_tag_whole_video_single_window(monkeypatch):
     assert isinstance(v, Vector)
     assert v.frame_info is None
     assert v.start_time == 0
-    assert v.end_time == 12_000  # whole media, in ms
+    assert v.end_time == 0  # tagger should align when run on full content
     assert len(v.vector) == fake.dim
     # the single window spans [0, duration] and is passed to the embedder in seconds
     item = fake.calls[0]["inputs"][0]
@@ -152,7 +152,7 @@ def test_tag_segments_emit_one_vector_each(monkeypatch):
 
     assert len(tags) == 3
     assert all(isinstance(t, Vector) for t in tags)
-    assert [(t.start_time, t.end_time) for t in tags] == [(0, 10_000), (10_000, 20_000), (20_000, 25_000)]
+    assert [(t.start_time, t.end_time) for t in tags] == [(0, 0), (0, 0), (0, 0)]
     # no pooled whole-video tag is appended
     assert all(t.frame_info is None for t in tags)
     # each window is trimmed in seconds for Qwen's native reader
@@ -178,7 +178,7 @@ def test_tag_bad_segment_is_skipped_not_fatal(monkeypatch):
     # every window was attempted, but the failed one produced no Vector
     assert len(fake.calls) == 3
     assert len(tags) == 2
-    assert [(t.start_time, t.end_time) for t in tags] == [(0, 10_000), (20_000, 25_000)]
+    assert [(t.start_time, t.end_time) for t in tags] == [(0, 0), (0, 0)]
 
 
 # -------------------- dtype auto-selection (constructor) --------------------
@@ -297,6 +297,47 @@ def test_tag_all_segments_fail_emits_nothing(monkeypatch):
     assert len(fake.calls) == 3  # every window attempted despite failures
 
 
+def test_tag_subframe_trailing_remainder_folds_into_previous(monkeypatch):
+    # 30.03s media / 30s segments at 1 fps: naive windowing yields a 30ms tail
+    # [30.0s, 30.03s] shorter than one frame, which qwen_vl_utils rejects as an
+    # "Invalid time range". It must be folded into the previous window, leaving a
+    # single [0, 30.03s] segment (one Vector).
+    fake = _FakeEmbedder()
+    tagger = _make_tagger_with_fake(fake, segment_length_s=30.0)  # fps defaults to 1.0
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 30.03)
+
+    tags = tagger.tag("v.mp4")
+
+    # one merged window is embedded (the tail is not a second segment)
+    assert len(tags) == 1
+    assert len(fake.calls) == 1
+    # asserted on the embedder call (the window), since that is what the fold changes:
+    # the single window spans the whole media [0, 30.03s].
+    item = fake.calls[0]["inputs"][0]
+    assert item["video_start"] == 0.0
+    assert item["video_end"] == pytest.approx(30.03)
+
+
+def test_tag_trailing_remainder_at_least_one_frame_is_kept(monkeypatch):
+    # a trailing remainder >= one frame period is a genuine segment and must be kept.
+    # fps=2 -> one frame = 500ms; 20.6s / 10s segments -> last window [20.0s, 20.6s]
+    # is 600ms >= 500ms, so it stays its own segment (not folded).
+    fake = _FakeEmbedder()
+    tagger = _make_tagger_with_fake(fake, segment_length_s=10.0)
+    tagger.fps = 2.0
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 20.6)
+
+    tags = tagger.tag("v.mp4")
+
+    assert len(tags) == 3
+    assert len(fake.calls) == 3
+    # windows the embedder actually received (in seconds); the tail [20.0, 20.6] survives
+    windows_s = [(c["inputs"][0].get("video_start"), c["inputs"][0].get("video_end")) for c in fake.calls]
+    assert windows_s[:2] == [(0.0, 10.0), (10.0, 20.0)]
+    assert windows_s[2][0] == 20.0
+    assert windows_s[2][1] == pytest.approx(20.6)
+
+
 def test_tag_segment_length_ge_duration_collapses_to_one_window(monkeypatch):
     # segment_length_s >= media duration -> a single whole-video window
     fake = _FakeEmbedder()
@@ -306,7 +347,7 @@ def test_tag_segment_length_ge_duration_collapses_to_one_window(monkeypatch):
     tags = tagger.tag("v.mp4")
 
     assert len(tags) == 1
-    assert (tags[0].start_time, tags[0].end_time) == (0, 12_000)
+    assert (tags[0].start_time, tags[0].end_time) == (0, 0)
     assert len(fake.calls) == 1
 
 

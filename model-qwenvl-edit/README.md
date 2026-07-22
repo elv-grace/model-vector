@@ -34,45 +34,6 @@ The default is to vectorize the entirety of the video without segmenting, yieldi
 | `normalize`| `None` | whether the output vector(s) should be L2-normalized for cosine similarity; default is to normalize |
 | `segment_length_s`    | `None`    | segment duration (s); `null` embeds the whole video as one window |
 
-## Layout
-
-```
-model-qwenvl-edit/
-├── run.py                       ← entrypoint (builds tagger, runs the daemon)
-├── config.py / config.yml       ← weights path + device
-├── setup.py                     ← package "embedding" + deps (incl. common-ml from git)
-├── embedding/
-│   ├── model.py                 ← QwenVLVideoEmbedder (AVModel)
-│   └── qwen3_vl_embedding.py    ← vendored embedder (patched: video_start/video_end trimming)
-├── Containerfile / build.sh / Makefile
-└── tests/test_qwenvl_model.py
-```
-
-## Weights
-
-Weights are **not** baked into the image and **not** committed. The model
-(`Qwen/Qwen3-VL-Embedding-8B`, set by `model.embedder_id` in `config.yml`) is pulled
-from the HuggingFace hub the **first time the model loads**, into the container's HF
-cache at `HF_HOME=/elv/.hf_cache`.
-
-Mount a persistent host volume there (see **Run**) so the ~16GB download happens **once**
-and is reused across container runs instead of being re-downloaded on every start. The
-build no longer needs the weights present, so `build.sh` has no weight-presence check.
-
-For **reproducibility**, `config.yml` pins the hub snapshot to a specific commit via
-`model.revision` (threaded into `from_pretrained` for both the model and the processor),
-so a runtime pull always fetches the exact same weights/config/tokenizer even if the hub
-repo is updated later. Set `revision: null` to track the latest commit on `main`.
-
-To use a local/offline copy instead of the hub, set `embedder_id` to an **absolute path**
-to a mounted weights directory — `from_pretrained` accepts either a hub id or a path, and
-`config.py` leaves it untouched (it is not under the path-resolved `storage` key).
-
-Only the model files (safetensors, tokenizer/processor configs) are needed at
-runtime. The `scripts/qwen3_vl_embedding.py` bundled inside the HF snapshot is
-**not** used — the embedder code is vendored in `embedding/qwen3_vl_embedding.py`
-and the model class is instantiated directly (no `trust_remote_code` auto-load).
-
 ## Build
 
 Same flow as the other `model-*` taggers (requires podman with the NVIDIA
@@ -83,40 +44,6 @@ toolkit, and SSH access to the eluv-io repos with agent forwarding for the
 ssh-add            # so the container build can fetch common-ml over SSH
 ./build.sh         # no weights required at build time; they download at first run
 ```
-
-## Run
-
-Mount a persistent HF cache at `/elv/.hf_cache` so the weights download once (first run)
-and are reused afterwards. Use a podman **named volume** for the cache (podman-managed,
-avoids rootless uid-mapping issues) — create it once:
-
-```
-podman volume create hf_cache
-```
-
-The same `hf_cache` volume is shared with `model-frame-edit`; HF keys downloads by repo
-id, so the two models coexist in it without collision. Then run:
-
-```
-podman run --rm \
-  --volume=$(pwd)/test-files:/elv/test:ro \
-  --volume=$(pwd)/tags:/elv/tags:U \
-  --volume=hf_cache:/elv/.hf_cache \
-  --network host --device nvidia.com/gpu=3 \
-  qwenvl-embedding test/1.mp4
-```
-
-- `test/` and `tags/` stay **bind mounts** so input videos (`:ro`) and output JSONL live
-  directly on the host; only the write-heavy weights cache is a named volume.
-- The **first** run downloads `Qwen/Qwen3-VL-Embedding-8B` from the hub into the
-  `hf_cache` volume (~16GB); subsequent runs load straight from that cache.
-- For a **gated** or rate-limited download, pass a token: `--env HF_TOKEN=<token>`.
-- To run fully offline once cached, add `--env HF_HUB_OFFLINE=1`.
-- Swap the cache mount for a bind mount
-  (`--volume=$(pwd)/.hf_cache:/elv/.hf_cache`) if host directory is preferred; add `:U` if rootless podman writes it
-  with a mapped uid you can't read back.
-
-Output `vector` records are written to the runtime's `--output-path` JSONL.
 
 ## Tests
 
@@ -142,3 +69,5 @@ QWENVL_EMBEDDER_PATH=Qwen/Qwen3-VL-Embedding-8B \
 QWENVL_TEST_VIDEO=/elv/test/1.mp4 \
 pytest -k end_to_end tests      # needs CUDA; downloads weights if not cached
 ```
+
+Or use `test.sh`.

@@ -68,17 +68,26 @@ class QwenVLVideoEmbedder(AVModel):
         logger.debug(f"Qwen3-VL embedding {fpath}")
 
         duration_s = get_duration(fpath)
-        duration_ms = AVModel._to_milliseconds(duration_s)
+        duration_ms = round(duration_s * 1000)
 
         # Build segment [start_ms, end_ms] windows over the media.
         if self.segment_length_s is None or self.segment_length_s <= 0 or duration_s <= self.segment_length_s:
             windows = [(0, duration_ms)]
         else:
-            seg_ms = AVModel._to_milliseconds(self.segment_length_s)
+            seg_ms = round(self.segment_length_s * 1000)
+            # A trailing remainder shorter than one frame period maps to an empty frame
+            # range (start frame >= last frame, because the container's reported duration
+            # runs slightly past the last decodable frame), which makes qwen_vl_utils
+            # raise "Invalid time range". Include tail in the previous window instead.
+            min_window_ms = round(1000.0 / self.fps) if self.fps > 0 else 0
             windows = []
             start_ms = 0
             while start_ms < duration_ms:
-                windows.append((start_ms, min(start_ms + seg_ms, duration_ms)))
+                end_ms = min(start_ms + seg_ms, duration_ms)
+                if windows and (end_ms - start_ms) < min_window_ms:
+                    windows[-1] = (windows[-1][0], end_ms)
+                else:
+                    windows.append((start_ms, end_ms))
                 start_ms += seg_ms
 
         out: List[BaseTag] = []
@@ -108,8 +117,8 @@ class QwenVLVideoEmbedder(AVModel):
             segment_vecs.append(vec)
             out.append(Vector(
                 vector=vec.tolist(),
-                start_time=start_ms,
-                end_time=end_ms,
+                start_time=0,
+                end_time=0,
                 source_media=fpath,
                 track="",
                 frame_info=None,

@@ -6,6 +6,6 @@ models/*
 .cache
 tags/*
 test-files/*
-test_output/*
+test-output/*
 __pycache__
 *.egg-info

@@ -23,6 +23,7 @@ class RuntimeConfig:
     # but can provide some guidance if desired)
     prompt: Optional[str] = None
     # whether the vector should be L2-normalized for cosine similarity comparison
+    # None => normalize
     normalize: Optional[bool] = None
     # segment length in seconds; each segment is embedded over its own time window
     # None (or >= duration) => embed the whole video as a single window.
