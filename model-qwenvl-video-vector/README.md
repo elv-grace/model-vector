@@ -2,7 +2,7 @@
 
 A video-embedding tagger for the Eluvio tagging runtime. It embeds each input
 video into a single vector using **Qwen3-VL-Embedding-8B**, and emits it as a
-`Vector` tag.
+`Tag` with `vector` field.
 
 ## How it works
 
@@ -20,8 +20,8 @@ It plugs into `common_ml` via the `AVModel` interface:
 
 A single vector cannot meaningfully represent hours of video, and sampling a
 fixed `max_frames` across an 8-hour file yields ~1 frame every several minutes.
-So the video can be split into fixed-length segments (configurable by the user with the parameter **segment_length_s**); each segment is embedded over its own time window (dense frame sampling, bounded memory), and the per-segment vectors are output as a list of `Vector` tags.  
-The default is to vectorize the entirety of the video without segmenting, yielding a list of one `Vector` tag spanning the whole video duration `[0, duration]`.
+So the video can be split into fixed-length segments (configurable by the user with the parameter **segment_length_s**); each segment is embedded over its own time window (dense frame sampling, bounded memory), and the per-segment vectors are output as a list of `Tag` with `vector` field tags.  
+The default is to vectorize the entirety of the video without segmenting, yielding a list of one `Tag` with `vector` tag spanning the whole video duration.
 
 ## Runtime parameters (`--params` JSON)
 
@@ -42,6 +42,7 @@ toolkit, and SSH access to the eluv-io repos with agent forwarding for the
 
 ```
 ssh-add            # so the container build can fetch common-ml over SSH
+chmod +x build.sh
 ./build.sh         # no weights required at build time; they download at first run
 ```
 
@@ -57,16 +58,6 @@ persistent volume at `/root/.cache`** (a named volume or a host bind mount). Wit
 the weights land in the container's ephemeral writable layer and are lost on `--rm`,
 forcing a full ~16GB re-download on **every** container start.
 
-- The buildscripts only **build and push** the image (`make deploy` = tag + push to the
-  registry); they do **not** run it or configure any mount. The tagging runtime that
-  launches the container owns the cache mount.
-- A **named volume** (or host bind mount) at `/root/.cache` survives `--rm`; the writable
-  layer does not. See `test.sh` for a working invocation (`--volume=hf_cache:/root/.cache`).
-- The `hub/` cache is keyed by repo id, so one shared volume can serve this image and
-  `model-blip2-frame-vector` simultaneously.
-- Tag output (`--output-path`) is unaffected — that's plumbed by the runtime as usual;
-  only the weights cache needs this mount.
-
 ## Tests
 
 `tests/test_qwenvl_model.py` has fast unit tests (a fake embedder verifies the
@@ -75,21 +66,30 @@ opt-in end-to-end test.
 
 Run them **in a container** with the production dependency set (the image builds
 its own conda env and installs everything from `setup.py`; it does **not** use any
-host virtualenv).
+host virtualenv). Running `pytest` against a host interpreter may resolve a different/older `common-ml` than the `vector-tags` snapshot pinned in `setup.py` (whose `Tag` carries the `vector` field), so the suite can fail with `Tag ... unexpected keyword 'vector'` for environment reasons unrelated to the code.
+
+To build a **test-capable image** independent of the host interpreter, add `pytest` via the `test` extra (the default build omits it), then run the suite. The image's `ENTRYPOINT` is `run.py`, so override it to invoke pytest. Use **`python -m pytest`** (not the bare `pytest` executable): `pip install .` puts an installed `embedding` package on `sys.path`, and `-m` runs with the working dir (`/elv`) first so the *source* tree shadows it — the same import order `run.py` relies on.
 
 ```
-# inside an image built from setup.py (deps + pytest via the `test` extra)
-pip install .[test]
-pytest -k "not end_to_end" tests
+# build once with the test extra
+podman build --build-arg INSTALL_TEST=true -t qwen3vl-embedding-video-vector:test -f Containerfile .
+
+# fast unit tests (no model load, no GPU)
+podman run --rm --entrypoint /opt/conda/envs/mlpod/bin/python \
+    qwen3vl-embedding-video-vector:test -m pytest -k "not end_to_end" tests
 ```
 
 The end-to-end test runs the real model when you point it at a model + a video.
 `QWENVL_EMBEDDER_PATH` accepts either a hub id or a local weights path:
 
 ```
-QWENVL_EMBEDDER_PATH=Qwen/Qwen3-VL-Embedding-8B \
-QWENVL_TEST_VIDEO=/elv/test/1.mp4 \
-pytest -k end_to_end tests      # needs CUDA; downloads weights if not cached
+podman run --rm --entrypoint /opt/conda/envs/mlpod/bin/python \
+    --volume=hf_cache:/root/.cache \
+    --volume="$(pwd)/test-files:/elv/test:ro" \
+    --device nvidia.com/gpu=0 \
+    --env QWENVL_EMBEDDER_PATH=Qwen/Qwen3-VL-Embedding-8B \
+    --env QWENVL_TEST_VIDEO=/elv/test/USfootball10s.mp4 \
+    qwen3vl-embedding-video-vector:test -m pytest -k end_to_end tests   # needs CUDA; downloads weights if not cached
 ```
 
-Or use `test.sh`.
+Or use `test.sh` for a container smoke test of the entrypoint.

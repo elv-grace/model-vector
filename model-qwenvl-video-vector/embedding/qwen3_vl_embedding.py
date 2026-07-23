@@ -41,6 +41,25 @@ FRAME_MAX_PIXELS = 768 * IMAGE_FACTOR * IMAGE_FACTOR
 MAX_TOTAL_PIXELS = 10 * FRAME_MAX_PIXELS
 PAD_TOKEN = "<|endoftext|>"
 
+# --- video token-budget constants ------------------------------------------
+# Qwen3-VL turns a video into placeholder tokens; the count is driven by how many
+# frames x pixels qwen_vl_utils samples. If that count exceeds `max_length`, the
+# processor's `truncation=True` chops `input_ids`, the video-token count in the ids
+# no longer matches the count in the chat template, and the processor raises
+# "Mismatch in `video` token count ...". To guarantee a (possibly degraded) vector
+# instead of an error, we size the video to fit `max_length` up front and keep a
+# shrinking retry schedule as a safety net.
+#
+# One merged video token covers IMAGE_FACTOR x IMAGE_FACTOR pixels (patch 16 x
+# spatial_merge 2), and TEMPORAL_PATCH_SIZE frames are merged in time, so
+#     video_tokens ~= total_sampled_pixels / (IMAGE_FACTOR**2 * TEMPORAL_PATCH_SIZE)
+# which we invert to turn a token budget into a `total_pixels` budget.
+TEMPORAL_PATCH_SIZE = 2   # frames merged per temporal patch (config: temporal_patch_size)
+VIDEO_MIN_TOKEN_NUM = 128  # qwen_vl_utils floor: min spatial tokens per frame
+TEXT_TOKEN_RESERVE = 256  # tokens left for system prompt / instruction / template
+PIXEL_SAFETY = 0.9        # keep the estimate under the true count (matches qwen_vl_utils' 0.9)
+COARSE_MAX_FRAMES = 8     # last-resort: a handful of frames at ~min resolution
+
 # Define output structure for embeddings
 @dataclass
 class Qwen3VLForEmbeddingOutput(ModelOutput):
@@ -168,12 +187,12 @@ def is_video_input(video) -> bool:
 # Define embedder class for processing inputs and generating embeddings
 class Qwen3VLEmbedder():
     def __init__(
-        self, 
-        model_name_or_path: str, 
+        self,
+        model_name_or_path: str,
         max_length: int = MAX_LENGTH,
         min_pixels: int = MIN_PIXELS,
         max_pixels: int = MAX_PIXELS,
-        total_pixels: int = MAX_TOTAL_PIXELS,
+        total_pixels: Optional[int] = None,  # None -> derived from max_length so video tokens fit
         fps: float = FPS,
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Represent the user's input.",
@@ -185,9 +204,20 @@ class Qwen3VLEmbedder():
         self.max_length = max_length
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
-        self.total_pixels = total_pixels
+
+        # Video token budget: leave room for the text/template tokens, then size the
+        # pixel budget so the sampled video fits under `max_length`. An explicit
+        # `total_pixels` (if a caller passes one) is still honoured.
+        self.video_token_budget = max(TEMPORAL_PATCH_SIZE * VIDEO_MIN_TOKEN_NUM,
+                                      max_length - TEXT_TOKEN_RESERVE)
+        self.total_pixels = (
+            self._tokens_to_total_pixels(self.video_token_budget)
+            if total_pixels is None else total_pixels
+        )
         self.fps = fps
-        self.max_frames = max_frames
+        # Clamp frames so that even at the per-frame minimum resolution the token
+        # floor cannot overflow the budget (a huge max_frames alone can exceed it).
+        self.max_frames = self._clamp_max_frames(max_frames, self.video_token_budget)
 
         self.default_instruction = default_instruction
 
@@ -200,6 +230,47 @@ class Qwen3VLEmbedder():
             model_name_or_path, padding_side='right', revision=revision
         )
         self.model.eval()
+
+    # --- video token-budget helpers ---------------------------------------
+    @staticmethod
+    def _tokens_to_total_pixels(tokens: int) -> int:
+        """Invert video_tokens ~= total_pixels / (IMAGE_FACTOR**2 * TEMPORAL_PATCH_SIZE)
+        to turn a token budget into the `total_pixels` budget qwen_vl_utils consumes."""
+        return int(tokens * IMAGE_FACTOR * IMAGE_FACTOR * TEMPORAL_PATCH_SIZE * PIXEL_SAFETY)
+
+    @staticmethod
+    def _clamp_max_frames(max_frames: int, token_budget: int) -> int:
+        """Cap the frame count so the per-frame minimum (VIDEO_MIN_TOKEN_NUM tokens,
+        after temporal merge) cannot alone exceed the budget:
+            floor_tokens = (nframes / TEMPORAL_PATCH_SIZE) * VIDEO_MIN_TOKEN_NUM <= budget
+        The cap is rounded down to TEMPORAL_PATCH_SIZE (qwen_vl_utils' frame factor)."""
+        cap = (token_budget * TEMPORAL_PATCH_SIZE) // VIDEO_MIN_TOKEN_NUM
+        cap -= cap % TEMPORAL_PATCH_SIZE
+        cap = max(TEMPORAL_PATCH_SIZE, cap)
+        if max_frames > cap:
+            logger.warning(
+                f"max_frames={max_frames} can overflow the video token budget "
+                f"({token_budget} tokens); limiting to {cap} frames"
+            )
+            return cap
+        return max_frames
+
+    def _degradation_schedule(self):
+        """Order to attempt embedding (in decreasing granularity) until the video fits under `max_length`. 
+        Each entry is (total_pixels, max_frames_override, is_last_resort).
+        `max_frames_override` is None means 'use the per-item / configured max_frames'.
+        The last entry (attempt) is a coarse ~min-resolution fallback that fits any reasonable max_length
+        so the video is always encoded (as a sparse/degraded vector) rather than skipped."""
+        # Coarse fallback: a few frames near the per-frame minimum resolution.
+        coarse_total_pixels = self._tokens_to_total_pixels(
+            VIDEO_MIN_TOKEN_NUM * max(1, COARSE_MAX_FRAMES // TEMPORAL_PATCH_SIZE)
+        )
+        return [
+            (self.total_pixels, None, False),                                    # normal
+            (max(1, self.total_pixels // 2),                                     # degrade
+             max(TEMPORAL_PATCH_SIZE, self.max_frames // 2), False),
+            (coarse_total_pixels, COARSE_MAX_FRAMES, True),                      # last resort
+        ]
 
     def assert_dtype(self, expected: torch.dtype = torch.bfloat16) -> None: # cc Claude Opus 4.8
         """Verify every model (and score head) parameter is in `expected` dtype."""
@@ -251,8 +322,12 @@ class Qwen3VLEmbedder():
         fps: Optional[float] = None,
         max_frames: Optional[int] = None,
         video_start: Optional[float] = None,
-        video_end: Optional[float] = None
+        video_end: Optional[float] = None,
+        total_pixels: Optional[int] = None  # None -> self.total_pixels; overridden by the degrade retry
     ) -> List[Dict]:
+
+        # Pixel budget for this call (a degradation retry passes a smaller one).
+        total_pixels = self.total_pixels if total_pixels is None else total_pixels
 
         # Ensure instruction ends with punctuation
         if instruction:
@@ -300,21 +375,25 @@ class Qwen3VLEmbedder():
         # Process each video
         for vid in videos:
             video_content = None
-            video_kwargs = {'total_pixels': self.total_pixels}
-            
+            # total_pixels bounds the video token count so it fits under max_length;
+            # keep it for BOTH input shapes (previously the file-path branch replaced
+            # video_kwargs wholesale and dropped it, letting qwen_vl_utils fall back to
+            # its 128k-context default and overflow max_length -> token-count mismatch).
+            video_kwargs = {'total_pixels': total_pixels}
+
             if isinstance(vid, list):
                 # Video as frame sequence
                 video_content = vid
                 if self.max_frames is not None:
                     video_content = sample_frames(video_content, self.max_frames)
                 video_content = [
-                    ('file://' + ele if isinstance(ele, str) else ele) 
+                    ('file://' + ele if isinstance(ele, str) else ele)
                     for ele in video_content
                 ]
             elif isinstance(vid, str):
                 # Video as file path
                 video_content = vid if vid.startswith(('http://', 'https://')) else 'file://' + vid
-                video_kwargs = {'fps': fps or self.fps, 'max_frames': max_frames or self.max_frames}
+                video_kwargs.update({'fps': fps or self.fps, 'max_frames': max_frames or self.max_frames}) # in addition to 'total_pixels'
                 # Optional temporal trimming: qwen_vl_utils reads video_start/video_end
                 # (seconds) from the video content element and only decodes/samples
                 # frames within that window -> dense sampling of a segment.
@@ -405,25 +484,62 @@ class Qwen3VLEmbedder():
 
     # Process inputs to generate normalized embeddings
     def process(self, inputs: List[Dict[str, Any]], normalize: bool = True) -> tuple:
-        conversations = [self.format_model_input(
-            text=ele.get('text'),
-            image=ele.get('image'),
-            video=ele.get('video'),
-            instruction=ele.get('instruction'),
-            fps=ele.get('fps'),
-            max_frames=ele.get('max_frames'),
-            video_start=ele.get('video_start'),
-            video_end=ele.get('video_end')
-        ) for ele in inputs]
+        # Try the normal budget first, then progressively coarser video sampling. This
+        # guarantees a (possibly sparse/degraded) vector instead of aborting on the
+        # processor's "Mismatch in `video` token count ..." error, which fires when a
+        # long/high-res video would exceed max_length and truncation clips its tokens.
+        # (Unless it is another error, in which case still abort.)
+        last_err: Optional[Exception] = None
+        schedule = self._degradation_schedule()
+        for total_pixels, max_frames_override, is_last_resort in schedule:
+            if is_last_resort:
+                logger.warning(
+                    "video did not fit under max_length=%s at normal or degraded settings; "
+                    "input parameters are pathological -- falling back to a coarse last-resort "
+                    "encoding (%s frames, total_pixels=%s). The resulting vector is a sparse, "
+                    "degraded representation of the video.",
+                    self.max_length, max_frames_override, total_pixels,
+                )
+            try:
+                conversations = [self.format_model_input(
+                    text=ele.get('text'),
+                    image=ele.get('image'),
+                    video=ele.get('video'),
+                    instruction=ele.get('instruction'),
+                    fps=ele.get('fps'),
+                    # override the frame cap on degraded retries; else honour the item's
+                    max_frames=(max_frames_override if max_frames_override is not None
+                                else ele.get('max_frames')),
+                    video_start=ele.get('video_start'),
+                    video_end=ele.get('video_end'),
+                    total_pixels=total_pixels,
+                ) for ele in inputs]
 
-        processed_inputs = self._preprocess_inputs(conversations)
-        processed_inputs = {k: v.to(self.model.device) for k, v in processed_inputs.items()}
+                processed_inputs = self._preprocess_inputs(conversations)
+                processed_inputs = {k: v.to(self.model.device) for k, v in processed_inputs.items()}
 
-        outputs = self.forward(processed_inputs)
-        embeddings = self._pooling_last(outputs['last_hidden_state'], outputs['attention_mask'])
+                outputs = self.forward(processed_inputs)
+                embeddings = self._pooling_last(outputs['last_hidden_state'], outputs['attention_mask'])
 
-        # Normalize the embeddings if specified
-        if normalize:
-            embeddings = F.normalize(embeddings, p=2, dim=-1)
+                # Normalize the embeddings if specified
+                if normalize:
+                    embeddings = F.normalize(embeddings, p=2, dim=-1)
 
-        return embeddings
+                logger.info("embedding successful")
+                return embeddings
+            except ValueError as e:
+                # Only the video/text token-count mismatch is retryable by shrinking the
+                # video; any other ValueError is a real error and must propagate.
+                if "Mismatch in" not in str(e):
+                    raise
+                last_err = e
+                logger.warning(
+                    f"video token-count mismatch at total_pixels={total_pixels}, "
+                    f"max_frames={max_frames_override}; retrying with a smaller budget" # to handle error '{e}'
+                )
+
+        # Even the coarse fallback could not fit -- genuinely broken input.
+        raise RuntimeError(
+            f"could not fit video within max_length={self.max_length} even at the coarse "
+            f"last-resort budget"
+        ) from last_err

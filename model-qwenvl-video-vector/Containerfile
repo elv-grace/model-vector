@@ -22,8 +22,18 @@ RUN ssh-keyscan -t rsa github.com >> /root/.ssh/known_hosts
 # `pip install .` installs the dependencies (incl. common-ml from git); the tagger
 # code itself runs from the source copied below (WORKDIR is on sys.path).
 COPY setup.py .
-RUN mkdir -p embedding
-RUN /opt/conda/envs/mlpod/bin/pip install .
+# setup.py declares packages=["embedding"], so the dir must exist and be an importable
+# package at install time. Create __init__.py here (replaced by COPY below) for setuptools.
+RUN mkdir -p embedding && touch embedding/__init__.py
+
+# INSTALL_TEST=true also installs the `test` extra (pytest) so this image can run the
+# unit tests. See README "Tests".
+ARG INSTALL_TEST=false
+RUN if [ "$INSTALL_TEST" = "true" ]; then \
+        /opt/conda/envs/mlpod/bin/pip install .[test]; \
+    else \
+        /opt/conda/envs/mlpod/bin/pip install . ; \
+    fi
 
 # Qwen3-VL-Embedding-8B weights is pulled from the HuggingFace hub
 # the first time the model loads and written to a cache.
@@ -36,5 +46,7 @@ ENV HF_HOME=/root/.cache
 # Source code last (changes most often).
 COPY embedding/__init__.py embedding/model.py embedding/qwen3_vl_embedding.py ./embedding/
 COPY config.yml run.py config.py ./
+# Unit tests. Only exercised when the image is built with INSTALL_TEST=true.
+COPY tests ./tests
 
 ENTRYPOINT ["/opt/conda/envs/mlpod/bin/python", "-u", "run.py"]

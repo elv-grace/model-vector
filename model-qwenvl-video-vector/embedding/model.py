@@ -7,7 +7,7 @@ import numpy as np
 
 from common_ml.tagging.models.av import AVModel
 from common_ml.video_processing import get_duration
-from common_ml.tagging.messages import BaseTag, Vector
+from common_ml.tagging.messages import Tag
 
 from embedding.qwen3_vl_embedding import Qwen3VLEmbedder
 
@@ -64,7 +64,7 @@ class QwenVLVideoEmbedder(AVModel):
     def _ms_to_seconds(ms: Optional[int]) -> Optional[float]:
         return None if ms is None else ms / 1000.0
 
-    def tag(self, fpath: str) -> List[BaseTag]:
+    def tag(self, fpath: str) -> List[Tag]:
         logger.debug(f"Qwen3-VL embedding {fpath}")
 
         duration_s = get_duration(fpath)
@@ -90,8 +90,9 @@ class QwenVLVideoEmbedder(AVModel):
                     windows.append((start_ms, end_ms))
                 start_ms += seg_ms
 
-        out: List[BaseTag] = []
+        out: List[Tag] = []
         segment_vecs: List[np.ndarray] = []
+        single_window = len(windows)==1
         for (start_ms, end_ms) in windows:
             # Guard each segment: one bad window must not abort the whole
             # media (which would discard every other segment's work and
@@ -115,10 +116,13 @@ class QwenVLVideoEmbedder(AVModel):
             # _embed_video already applied `self.normalize`, so segment vectors are
             # normalized (or raw) as requested -- emit them as-is.
             segment_vecs.append(vec)
-            out.append(Vector(
+            # if no segmenting (just one vector) -> start and end time 0, else -> actual timestamps
+            st, et = (0, 0) if single_window else (start_ms, end_ms)
+            out.append(Tag(
+                tag="",
                 vector=vec.tolist(),
-                start_time=0,
-                end_time=0,
+                start_time=st,
+                end_time=et,
                 source_media=fpath,
                 track="",
                 frame_info=None,
@@ -126,7 +130,7 @@ class QwenVLVideoEmbedder(AVModel):
 
         if not segment_vecs:  # no usable segments -> emit no vector
             logger.warning(f"no usable segments for {fpath}; emitting no vector")
-            return out
+            return out # empty list []
 
         # no pooling segment-vectors into one vector
         # if a long video was processed by segment, then return all the segment vectors
