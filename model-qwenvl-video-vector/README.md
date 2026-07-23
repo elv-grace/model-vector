@@ -1,4 +1,4 @@
-# model-qwenvl-edit - Qwen3-VL-Embedding video embedder
+# model-qwenvl-video-vector - Qwen3-VL-Embedding video embedder
 
 A video-embedding tagger for the Eluvio tagging runtime. It embeds each input
 video into a single vector using **Qwen3-VL-Embedding-8B**, and emits it as a

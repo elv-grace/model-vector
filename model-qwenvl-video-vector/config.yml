@@ -1,7 +1,7 @@
 model:
   # HuggingFace hub repo id for the embedding model. Pulled from the hub at load
   # time (no weights are baked into the image). Mount a persistent HF cache so the
-  # download happens once and is reused across container runs (can see README "Run").
+  # download happens once and is reused across container runs (can see README "Deployment").
   # May also be an absolute path to a local/mounted weights directory (from_pretrained
   # accepts either). Not path-resolved by config.py, so a hub id stays intact.
   embedder_id: Qwen/Qwen3-VL-Embedding-8B
