@@ -7,7 +7,7 @@ from loguru import logger
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForImageTextRetrieval
 
-from common_ml.tagging.models.tag_types import FrameVector
+from common_ml.tagging.models.tag_types import FrameTag
 from common_ml.tagging.models.frame_based import FrameModel
 
 from blip_frame.config import RuntimeConfig
@@ -65,10 +65,10 @@ class FeatureExtractor(FrameModel):
         ).to(self.device)
         self.model.eval()
 
-    def tag_frame(self, img: np.ndarray) -> List[FrameVector]:
+    def tag_frame(self, img: np.ndarray) -> List[FrameTag]:
         vec = self._embed_frame(img)
         # dict(...) so each tag owns its box (the module constant is never shared/mutated).
-        return [FrameVector(vector=vec.tolist(), box=dict(_WHOLE_FRAME_BOX))]
+        return [FrameTag(tag="", vector=vec.tolist(), box=dict(_WHOLE_FRAME_BOX))]
 
     def _embed_frame(self, img: np.ndarray) -> np.ndarray:
         # Processor normalizes an (H, W, 3) uint8 RGB image into pixel_values; cast them

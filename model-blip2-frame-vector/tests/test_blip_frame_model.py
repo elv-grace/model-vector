@@ -5,7 +5,7 @@ import pytest
 
 torch = pytest.importorskip("torch")  # the fakes return torch tensors
 
-from common_ml.tagging.models.tag_types import FrameVector
+from common_ml.tagging.models.tag_types import FrameTag
 from common_ml.tagging.models.frame_based import FrameModel
 
 from blip_frame.model import FeatureExtractor, _WHOLE_FRAME_BOX
@@ -52,7 +52,7 @@ def test_tag_frame_returns_single_whole_frame_vector():
 
     assert isinstance(out, list) and len(out) == 1
     fv = out[0]
-    assert isinstance(fv, FrameVector)
+    assert isinstance(fv, FrameTag) and fv.vector is not None
     assert fv.box == _WHOLE_FRAME_BOX
     assert len(fv.vector) == 256
     assert fv.vector[0] == pytest.approx(1.0)

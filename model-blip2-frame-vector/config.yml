@@ -4,8 +4,8 @@ device: cuda
 
 model:
   # Pulled from the HuggingFace hub the first time the model loads, into the container's
-  # HF cache at HF_HOME=/elv/.hf_cache. Mount a persistent volume there (see README
-  # "Run") so the download happens once and is reused across runs.
+  # HF cache at HF_HOME=/root/.cache. Mount a persistent volume there (see README
+  # "Deployment") so the download happens once and is reused across runs.
   #
   # blip2-itm-vit-g = ViT-g + Q-Former + image/text projection heads (no LLM): the
   # retrieval checkpoint whose 256-d image embeddings are contrastively aligned to text,
