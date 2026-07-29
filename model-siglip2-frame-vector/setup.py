@@ -1,14 +1,21 @@
 from setuptools import setup
 
 setup(
-    name="blip2-frame-vectors",
+    name="siglip2-frame-vectors",
     version="0.1",
-    packages=["blip_frame"],
+    packages=["siglip_frame"],
     python_requires=">=3.11",
     install_requires=[
         # model + inference
         'torch==2.8.*',
-        'transformers>=4.57.3',
+        # torchvision matched to torch 2.8: the SigLIP 2 checkpoints ship a fast image
+        # processor, which is built on torchvision transforms.
+        'torchvision==0.23.*',
+        # >=5 because `Siglip2ImageProcessor` names the torchvision-backed fast
+        # one in 5.x, and the numpy/PIL one in 4.x (where fast was `Siglip2ImageProcessorFast`).
+        # Their resampling differs slightly, so two workers on opposite sides of the floor
+        # would write subtly different vectors into the same index.
+        'transformers>=5.0.0',
         'accelerate>=1.12.0',
         'Pillow>=10.0.0',
         'numpy',

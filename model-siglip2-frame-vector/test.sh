@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Local smoke test for the blip2-frame-vectors container.
+# Local smoke test for the siglip2-frame-vectors container.
 #
 # Mirrors buildscripts/testers/test-model.sh (the canonical `make test` harness) but is a
 # thin, editable wrapper to vary fps easily:
@@ -19,7 +19,7 @@ set -uo pipefail
 # fps from $1 (default 1); which GPU from ELV_MODEL_TEST_GPU_TO_USE (default 3).
 FPS="${1:-1}"
 : "${ELV_MODEL_TEST_GPU_TO_USE:=3}"
-IMAGE_NAME="${IMAGE_NAME:-blip2-frame-vectors}"
+IMAGE_NAME="${IMAGE_NAME:-siglip2-frame-vectors}"
 
 cd "$(dirname "$0")"
 

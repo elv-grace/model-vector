@@ -22,10 +22,10 @@ RUN ssh-keyscan -t rsa github.com >> /root/.ssh/known_hosts
 # `pip install .` installs the dependencies (incl. common-ml from git); the tagger code
 # itself runs from the source copied below (WORKDIR is on sys.path).
 COPY setup.py .
-RUN mkdir -p blip_frame
+RUN mkdir -p siglip_frame
 RUN /opt/conda/envs/mlpod/bin/pip install .
 
-# blip2-itm-vit-g is pulled from the HuggingFace hub the first time the model loads
+# siglip2-so400m-patch16-naflex is pulled from the HuggingFace hub the first time the model loads
 # and written to a cache. No weights are baked into the image. Mount a persistent
 # volume at HF_HOME so the download happens once and is reused across container runs.
 # Uses a podman named volume (`hf_cache`), shared with model-qwenvl-video-vector (a host bind mount works too).
@@ -33,7 +33,7 @@ RUN /opt/conda/envs/mlpod/bin/pip install .
 ENV HF_HOME=/root/.cache
 
 # Source last (changes most often).
-COPY blip_frame ./blip_frame
+COPY siglip_frame ./siglip_frame
 COPY config.yml run.py config.py ./
 
 ENTRYPOINT ["/opt/conda/envs/mlpod/bin/python", "-u", "run.py"]

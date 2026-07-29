@@ -1,5 +1,5 @@
-[submodule "model-blip2-frame-vector/buildscripts"]
-	path = model-blip2-frame-vector/buildscripts
+[submodule "model-siglip2-frame-vector/buildscripts"]
+	path = model-siglip2-frame-vector/buildscripts
 	url = git@github.com:qluvio/buildscripts
 [submodule "model-qwenvl-video-vector/buildscripts"]
 	path = model-qwenvl-video-vector/buildscripts

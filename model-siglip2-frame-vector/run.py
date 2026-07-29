@@ -3,12 +3,12 @@ import setproctitle
 
 from common_ml.tagging.run_helpers import catch_errors, get_params, run_default
 
-from blip_frame.model import FeatureExtractor
-from blip_frame.config import RuntimeConfig
+from siglip_frame.model import FeatureExtractor
+from siglip_frame.config import RuntimeConfig
 from config import config
 
 if __name__ == '__main__':
-    setproctitle.setproctitle('blip2-frame-vectors')
+    setproctitle.setproctitle('siglip2-frame-vectors')
 
     catch_errors()
 
