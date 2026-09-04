@@ -7,6 +7,7 @@ from dacite import from_dict
 from common_ml.tagging.run_helpers import run_default, catch_errors, get_params
 
 from embedding.model import QwenVLVideoEmbedder
+from embedding.qwen3_vl_embedding import EMBEDDING_DIM
 from config import config
 
 
@@ -42,6 +43,9 @@ if __name__ == "__main__":
     model = QwenVLVideoEmbedder(
         embedder_path=config["model"]["embedder_id"],
         revision=config["model"].get("revision"),
+        # deployment-fixed vector width (config.yml)
+        # so one consistent width across every request (in vectorstore index)
+        embedding_dim=config["model"].get("embedding_dim", EMBEDDING_DIM),
         fps=params.fps,
         max_frames=params.max_frames,
         max_length=params.max_length,

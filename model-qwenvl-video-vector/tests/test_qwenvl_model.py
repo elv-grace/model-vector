@@ -19,6 +19,8 @@ try:
 except ImportError:
     _stub = types.ModuleType("embedding.qwen3_vl_embedding")
     _stub.Qwen3VLEmbedder = type("Qwen3VLEmbedder", (), {})
+    # `embedding.model` also imports the default output width from this module
+    _stub.EMBEDDING_DIM = 1024
     sys.modules["embedding.qwen3_vl_embedding"] = _stub
 
 from embedding.model import QwenVLVideoEmbedder
@@ -376,7 +378,8 @@ def test_end_to_end_one_vector_per_video():
     assert isinstance(v, Tag) and v.vector is not None
     assert v.frame_info is None
     assert v.start_time == 0
-    assert len(v.vector) > 0
+    # MRL-truncated from the checkpoint's native 4096 to the configured width
+    assert len(v.vector) == 1024
     # normalized -- tolerance is loose because the model runs in bfloat16 on
     # bf16-capable GPUs (~2^-8 relative precision), so the norm won't hit 1.0 as
     # tightly as an fp32 run would.
@@ -388,8 +391,10 @@ def test_end_to_end_one_vector_per_video():
 # by building a bare instance (object.__new__) and setting only the attributes the budget
 # code reads.
 
-def _bare_embedder(max_length: int = 8192, max_frames: int = 64) -> "qmod.Qwen3VLEmbedder":
+def _bare_embedder(max_length: int = 8192, max_frames: int = 64,
+                   embedding_dim: int = qmod.EMBEDDING_DIM if _REAL_EMBEDDER else 1024) -> "qmod.Qwen3VLEmbedder":
     e = object.__new__(qmod.Qwen3VLEmbedder)
+    e.embedding_dim = embedding_dim
     e.max_length = max_length
     e.min_pixels = qmod.MIN_PIXELS
     e.max_pixels = qmod.MAX_PIXELS
@@ -513,3 +518,110 @@ def test_process_pathological_input_logs_and_raises(caplog):
             e.process([{"video": "v.mp4"}], normalize=False)
 
     assert any("pathological" in r.getMessage() for r in caplog.records)
+
+
+# -------------------- MRL output width (embedder) --------------------
+# The checkpoint pools a 4096-d vector (text hidden_size); the tagger emits a
+# Matryoshka-truncated 1024-d one. These cover the truncate-then-normalize contract
+# without loading the 8B model.
+
+@requires_real_embedder
+def test_default_embedding_dim_is_1024():
+    # the shipped default output width
+    assert qmod.EMBEDDING_DIM == 1024
+    assert qmod.MRL_MIN_DIM <= qmod.EMBEDDING_DIM <= qmod.MRL_MAX_DIM
+
+
+@requires_real_embedder
+def test_truncate_mrl_keeps_leading_dims():
+    # MRL front-loads information, so truncation keeps the FIRST dims (not the last)
+    e = _bare_embedder(embedding_dim=4)
+    out = e._truncate_mrl(torch.arange(12, dtype=torch.float32).reshape(1, 12))
+    assert tuple(out.shape) == (1, 4)
+    assert out[0].tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
+@requires_real_embedder
+def test_truncate_mrl_is_noop_when_already_short():
+    # a vector already at/below the target width is passed through untouched
+    e = _bare_embedder(embedding_dim=1024)
+    vec = torch.arange(4, dtype=torch.float32).reshape(1, 4)
+    assert e._truncate_mrl(vec) is vec
+
+
+@requires_real_embedder
+def test_process_truncates_to_embedding_dim_and_renormalizes():
+    # the pooled 4096-d vector is emitted at embedding_dim, and -- the part that matters
+    # for cosine search -- unit-norm AT THAT WIDTH (truncating after normalizing would
+    # leave a norm < 1)
+    e = _bare_embedder(embedding_dim=1024)
+    e._preprocess_inputs = lambda conversations: {}
+    e.forward = lambda inp: {
+        "last_hidden_state": torch.randn(1, 1, 4096),
+        "attention_mask": torch.ones(1, 1),
+    }
+
+    out = e.process([{"video": "v.mp4"}], normalize=True)
+
+    assert tuple(out.shape) == (1, 1024)
+    assert float(out.norm(p=2, dim=-1)[0]) == pytest.approx(1.0, abs=1e-5)
+
+
+@requires_real_embedder
+def test_process_truncates_without_normalize():
+    # normalize=False still truncates -- the width is config, not a side effect of scaling
+    e = _bare_embedder(embedding_dim=1024)
+    e._preprocess_inputs = lambda conversations: {}
+    hidden = torch.randn(1, 1, 4096)
+    e.forward = lambda inp: {"last_hidden_state": hidden, "attention_mask": torch.ones(1, 1)}
+
+    out = e.process([{"video": "v.mp4"}], normalize=False)
+
+    assert tuple(out.shape) == (1, 1024)
+    # raw (unnormalized) leading dims, straight from the pooled hidden state
+    assert torch.allclose(out[0], hidden[0, 0, :1024])
+
+
+@requires_real_embedder
+@pytest.mark.parametrize("bad_dim", [0, 32, 4097, 10_000, -1])
+def test_embedding_dim_outside_mrl_range_rejected(bad_dim):
+    # validated at construction, so a misconfigured width fails at load rather than
+    # after GPU-minutes of embedding have produced unusable vectors
+    with pytest.raises(ValueError, match="outside the MRL range"):
+        qmod.Qwen3VLEmbedder(model_name_or_path="x", embedding_dim=bad_dim)
+
+
+@requires_real_embedder
+def test_embedding_dim_non_int_rejected():
+    with pytest.raises(TypeError, match="must be an int"):
+        qmod.Qwen3VLEmbedder(model_name_or_path="x", embedding_dim=1024.0)
+
+
+@requires_real_embedder
+def test_native_dim_read_from_nested_text_config():
+    # Qwen3VLConfig nests hidden_size under text_config (4096 for -8B)
+    cfg = types.SimpleNamespace(text_config=types.SimpleNamespace(hidden_size=4096))
+    assert qmod.Qwen3VLEmbedder._native_dim(cfg) == 4096
+    # a flat config is tolerated, and an unknown layout skips the check
+    assert qmod.Qwen3VLEmbedder._native_dim(types.SimpleNamespace(hidden_size=2048)) == 2048
+    assert qmod.Qwen3VLEmbedder._native_dim(types.SimpleNamespace()) is None
+
+
+# -------------------- MRL output width (tagger wiring) --------------------
+
+def test_embedding_dim_forwarded_to_embedder(monkeypatch):
+    captured = _capture_embedder(monkeypatch)
+
+    QwenVLVideoEmbedder(embedder_path="x", embedding_dim=512)
+
+    assert captured["embedding_dim"] == 512
+
+
+def test_embedding_dim_defaults_to_1024(monkeypatch):
+    # the tagger's default matches the module default, so config.yml omitting the key
+    # still yields 1024-d vectors
+    captured = _capture_embedder(monkeypatch)
+
+    QwenVLVideoEmbedder(embedder_path="x")
+
+    assert captured["embedding_dim"] == 1024

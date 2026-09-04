@@ -10,6 +10,21 @@ The tagger uses Qwen's **native video path**: a whole video (or a time window of
 it) is handed to the model at once, so frames are sampled *with temporal position
 encoding* and the resulting vector captures motion/ordering.
 
+### Output dimension (1024, MRL-truncated)
+
+The checkpoint pools a **4096-d** vector (the text tower's `hidden_size`), but the
+tagger emits **1024-d** vectors. `Qwen3-VL-Embedding` is trained with **Matryoshka
+Representation Learning** (model card: *MRL Support: Yes*, user-defined widths
+**64–4096**), which front-loads information into the leading coordinates — so the
+shorter vector is the first 1024 dims, **re-normalized at that width**. Order matters:
+truncating an already-normalized 4096-d vector would leave a norm < 1 and distort
+cosine scores, so `process()` truncates *then* normalizes.
+
+The width is set by `embedding_dim` in `config.yml`, alongside `embedder_id`/`revision` —
+it is **deployment config, not a `--params` runtime tunable**, because every vector in a
+search index must share one width. Changing it invalidates already-indexed vectors;
+they have to be re-embedded.
+
 It plugs into `common_ml` via the `AVModel` interface:
 
 - `embedding/model.py` — `QwenVLVideoEmbedder(AVModel)`: turns one

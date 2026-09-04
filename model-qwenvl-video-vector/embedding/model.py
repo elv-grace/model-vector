@@ -9,7 +9,7 @@ from common_ml.tagging.models.av import AVModel
 from common_ml.video_processing import get_duration
 from common_ml.tagging.messages import Tag
 
-from embedding.qwen3_vl_embedding import Qwen3VLEmbedder
+from embedding.qwen3_vl_embedding import Qwen3VLEmbedder, EMBEDDING_DIM
 
 
 class QwenVLVideoEmbedder(AVModel):
@@ -26,6 +26,10 @@ class QwenVLVideoEmbedder(AVModel):
         fps: float = 1.0,
         max_frames: int = 64,
         max_length: int = 8192,
+        # Output vector width, MRL-truncated from the checkpoint's native 4096. Fixed by
+        # config.yml (deployment-level), NOT a per-request param: every vector in a search
+        # index must share one width, so it cannot vary request to request.
+        embedding_dim: int = EMBEDDING_DIM,
         prompt: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,  # None -> bfloat16 if the GPU supports it, else float16
         normalize: Optional[bool] = None,
@@ -53,7 +57,9 @@ class QwenVLVideoEmbedder(AVModel):
             fps=fps,
             max_frames=max_frames,
             max_length=max_length,
+            embedding_dim=embedding_dim,
         )
+        self.embedding_dim = embedding_dim
         self.fps = fps
         self.max_frames = max_frames
         self.prompt = prompt

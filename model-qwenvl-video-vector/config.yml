@@ -10,6 +10,14 @@ model:
   # updates. Set to null to track the latest commit on the default branch (`main`).
   # Ignored when embedder_id is a local path.
   revision: 2c4565515e0f265c6511776e7193b22c0968ddc7
+  # Width of the emitted vectors. The checkpoint's native pooled width is 4096
+  # (the text tower's hidden_size), which is trained with Matryoshka Representation
+  # Learning, so a shorter vector is taken as the leading `embedding_dim` dims and
+  # re-normalized; the model card supports any width in 64-4096.
+  # This is deployment config, NOT a per-request `--params` tunable: every vector in a
+  # search index has to share one width, so it must not vary request to request.
+  # Changing it invalidates already-indexed vectors -- they must be re-embedded.
+  embedding_dim: 1024
 
 # GPU is auto-detected at runtime (torch.cuda.is_available);
 # advisory only, matching the other model-* taggers.

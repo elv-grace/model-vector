@@ -41,6 +41,19 @@ FRAME_MAX_PIXELS = 768 * IMAGE_FACTOR * IMAGE_FACTOR
 MAX_TOTAL_PIXELS = 10 * FRAME_MAX_PIXELS
 PAD_TOKEN = "<|endoftext|>"
 
+# --- output embedding dimension (MRL) --------------------------------------
+# Qwen3-VL-Embedding pools the text tower's last hidden state, so the native vector
+# width is the text `hidden_size`: 4096 for the -8B checkpoint (2048 for -2B). The
+# checkpoint is trained with Matryoshka Representation Learning (model card:
+# "MRL Support: Yes", "user-defined output dimensions ranging from 64 to 4096"),
+# which front-loads information into the leading coordinates. So a shorter vector is
+# obtained by keeping the FIRST `embedding_dim` dims and re-normalizing -- not by a
+# learned projection or by pooling across dims, both of which would break the metric.
+NATIVE_EMBEDDING_DIM = 4096  # -8B text hidden_size; informational (real value read from config)
+EMBEDDING_DIM = 1024         # default output width  (was: none -- full 4096 was emitted)
+MRL_MIN_DIM = 64             # model-card lower bound for a user-defined dimension
+MRL_MAX_DIM = 4096           # model-card upper bound for a user-defined dimension
+
 # --- video token-budget constants ------------------------------------------
 # Qwen3-VL turns a video into placeholder tokens; the count is driven by how many
 # frames x pixels qwen_vl_utils samples. If that count exceeds `max_length`, the
@@ -197,6 +210,7 @@ class Qwen3VLEmbedder():
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Represent the user's input.",
         revision: Optional[str] = None,  # hub commit to pin (model + processor); None -> default branch
+        embedding_dim: int = EMBEDDING_DIM,  # MRL output width; fixed by config.yml, not per-request
         **kwargs
     ):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -204,6 +218,17 @@ class Qwen3VLEmbedder():
         self.max_length = max_length
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
+
+        # Validate the MRL width at load: a bad value must fail before a
+        # GPU-minutes-long embed has already produced unusable vectors.
+        if not isinstance(embedding_dim, int) or isinstance(embedding_dim, bool):
+            raise TypeError(f"embedding_dim must be an int, got {type(embedding_dim)}")
+        if not (MRL_MIN_DIM <= embedding_dim <= MRL_MAX_DIM):
+            raise ValueError(
+                f"embedding_dim={embedding_dim} is outside the MRL range supported by "
+                f"Qwen3-VL-Embedding ({MRL_MIN_DIM}-{MRL_MAX_DIM})"
+            )
+        self.embedding_dim = embedding_dim
 
         # Video token budget: leave room for the text/template tokens, then size the
         # pixel budget so the sampled video fits under `max_length`. An explicit
@@ -230,6 +255,46 @@ class Qwen3VLEmbedder():
             model_name_or_path, padding_side='right', revision=revision
         )
         self.model.eval()
+
+        # The pooled vector is one row of the text tower's last hidden state, so the
+        # checkpoint's native width is its `hidden_size`. Read it from the loaded config
+        # rather than assuming NATIVE_EMBEDDING_DIM, so swapping in the -2B checkpoint
+        # (2048) is caught instead of silently mis-sized.
+        self.native_embedding_dim = self._native_dim(self.model.config)
+        if self.native_embedding_dim is not None and self.embedding_dim > self.native_embedding_dim:
+            raise ValueError(
+                f"embedding_dim={self.embedding_dim} exceeds the checkpoint's native "
+                f"embedding width ({self.native_embedding_dim}); MRL can only shorten a "
+                f"vector, never pad it"
+            )
+        logger.info(
+            f"embedding output dim: {self.embedding_dim} "
+            f"(native {self.native_embedding_dim}, MRL-truncated)"
+            if self.embedding_dim != self.native_embedding_dim
+            else f"embedding output dim: {self.embedding_dim} (native, no truncation)"
+        )
+
+    # --- MRL output-width helpers -----------------------------------------
+    @staticmethod
+    def _native_dim(config) -> Optional[int]:
+        """The checkpoint's native pooled-vector width, i.e. the text tower's
+        `hidden_size`. Qwen3VLConfig nests it under `text_config`, but tolerate a
+        flat config (and an unknown layout -> None, i.e. 'skip the check')."""
+        text_config = getattr(config, 'text_config', None)
+        for holder in (text_config, config):
+            dim = getattr(holder, 'hidden_size', None)
+            if isinstance(dim, int):
+                return dim
+        return None
+
+    def _truncate_mrl(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Shorten pooled vectors to `self.embedding_dim` the Matryoshka way: keep the
+        leading dims, which is where MRL training concentrates the information. Callers
+        must normalize AFTER this, so the emitted vector is unit-norm at its own width
+        (truncating a unit 4096-d vector leaves a norm < 1 and breaks cosine scores)."""
+        if embeddings.ndim == 0 or embeddings.shape[-1] <= self.embedding_dim:
+            return embeddings
+        return embeddings[..., :self.embedding_dim]
 
     # --- video token-budget helpers ---------------------------------------
     @staticmethod
@@ -520,6 +585,10 @@ class Qwen3VLEmbedder():
 
                 outputs = self.forward(processed_inputs)
                 embeddings = self._pooling_last(outputs['last_hidden_state'], outputs['attention_mask'])
+
+                # MRL truncation to the configured output width, BEFORE normalizing, so
+                # the emitted vector is unit-norm at its own dimension.
+                embeddings = self._truncate_mrl(embeddings)
 
                 # Normalize the embeddings if specified
                 if normalize:
