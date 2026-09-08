@@ -54,11 +54,11 @@ load-bearing and silent when wrong (SigLIP was trained with `padding="max_length
 collapse), so the query-side code still keys off `embedder`. See
 `embeddings-visualizer/src/embedder.py`, whose constants this metadata is the source for.
 
-**Where it does and does not travel.** A vectorstore search row is a fixed schema —
-`id, qid, start_time, end_time, frame_idx, track, source, index_id, tag, tag_id, vector` —
-with no free-form metadata field, so this rides on the **tag record** (the JSONL here, and
-the fabric/tagstore tag the runtime writes from it), not on a `/search` result. A consumer
-reads it once per content object rather than per row.
+**Where it travels.** The vectorstore stores `additional_info` as JSONB and returns it
+**verbatim on every search hit** (`VectorResponse.additional_info`), so a consumer gets the
+recipe on the same row as the vector — no second lookup against the content object. It is
+opaque to the index, though: *not indexed and not filterable*, so it cannot narrow a search.
+The filterable fields stay `qids`, `sources`, `track` and the start/end time ranges.
 
 ## Runtime parameters
 
