@@ -31,6 +31,35 @@ costs less per frame than ViT-g + Q-Former.
 **The tradeoff:** there is no late-interaction fallback. SigLIP 2 emits one vector, and its
 patch tokens are *not* individually text-aligned (only the pooled head is). Multi-aspect embeddings can be extracted from the individual patch tokens in the last hidden layer and mean pooling and projecting them. Or multi-crop or increase `max_num_patches`.
 
+## Vector metadata (`additional_info`)
+
+Every emitted tag carries the embedding recipe, so a **downstream query can be embedded
+into the same space** without the index having to record which model built it (it doesn't —
+`GET /indexes/{qid}` returns only `{qid, vector_size}`). Same `embedder`/`dim` convention as
+the sibling vector taggers (`model-detection`'s `Siglip2CropEmbedder`, `model-celeb-vector`).
+
+| key | example | why a query has to match it |
+|-----|---------|------------------------------|
+| `embedder` | `google/siglip2-base-patch16-naflex` | the checkpoint. Its **text tower** is what embeds a text query into this space |
+| `revision` | `b53b807d…` | the exact hub commit, so "the same model" really is the same weights |
+| `dim` | `768` | emitted width, read from the loaded `config.hidden_size` rather than hardcoded |
+| `normalize` | `true` | whether cosine reduces to a dot product. A raw-feature index and a normalized one are different spaces |
+| `max_num_patches` | `256` | the NaFlex resolution budget an **image** query has to be preprocessed at |
+| `kind` | `frame` | what the vector *is*. Read this instead of inferring modality from which positional fields are populated |
+| `query_modes` | `["text", "image"]` | which query kinds this space accepts. Declared for the checkpoint above (this tagger only ever loads the vision tower), so a `model_id` swap means revisiting `QUERY_MODES` in `siglip_frame/model.py` |
+
+`query_modes` gates *which* queries to offer, not *how* to embed one: the tokenization is
+load-bearing and silent when wrong (SigLIP was trained with `padding="max_length"`,
+`max_length=64` — tokenized any other way the query vector moves far enough that results
+collapse), so the query-side code still keys off `embedder`. See
+`embeddings-visualizer/src/embedder.py`, whose constants this metadata is the source for.
+
+**Where it does and does not travel.** A vectorstore search row is a fixed schema —
+`id, qid, start_time, end_time, frame_idx, track, source, index_id, tag, tag_id, vector` —
+with no free-form metadata field, so this rides on the **tag record** (the JSONL here, and
+the fabric/tagstore tag the runtime writes from it), not on a `/search` result. A consumer
+reads it once per content object rather than per row.
+
 ## Runtime parameters
 
 Injected per request as a JSON `--params` object (see `siglip_frame/config.py`):
