@@ -23,7 +23,7 @@ except ImportError:
     _stub.EMBEDDING_DIM = 1024
     sys.modules["embedding.qwen3_vl_embedding"] = _stub
 
-from embedding.model import QwenVLVideoEmbedder
+from embedding.model import QUERY_MODES, QwenVLVideoEmbedder
 
 # The video token-budget / degradation logic lives on the real Qwen3VLEmbedder; when the
 # transformers stack is absent the submodule is stubbed above, so those tests are skipped.
@@ -46,6 +46,11 @@ class _FakeEmbedder:
     def __init__(self, dim: int = 4):
         self.dim = dim
         self.calls = []
+        # read by _embedder_info: the effective (post-clamp) sampling budget and the
+        # instruction a tag falls back to when no prompt is set
+        self.max_frames = 64
+        self.max_length = 8192
+        self.default_instruction = "Represent the user's input."
 
     def process(self, inputs, normalize=True):
         import torch
@@ -63,6 +68,10 @@ def _make_tagger_with_fake(fake, prompt=None, normalize=None, segment_length_s=N
     tagger.prompt = prompt
     tagger.normalize = normalize
     tagger.segment_length_s = segment_length_s
+    # set by the real __init__, and stamped into every tag
+    tagger.model_id = "Qwen/Qwen3-VL-Embedding-8B"
+    tagger.revision = "deadbeef"
+    tagger.embedding_dim = fake.dim
     return tagger
 
 
@@ -189,6 +198,100 @@ def test_tag_bad_segment_is_skipped_not_fatal(monkeypatch):
     assert len(fake.calls) == 3
     assert len(tags) == 2
     assert [(t.start_time, t.end_time) for t in tags] == [(0, 10_000), (20_000, 25_000)]
+
+
+# -------------------- additional_info: the embedding recipe --------------------
+# Stamped on every emitted vector so a query can be embedded into the same space after
+# the fact, without the index having to record which model built it.
+
+def test_tag_carries_the_recipe_a_query_must_match(monkeypatch):
+    fake = _FakeEmbedder()
+    tagger = _make_tagger_with_fake(fake)
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 12.0)
+
+    info = tagger.tag("v.mp4")[0].additional_info
+
+    # the exact hub snapshot
+    assert info["embedder"] == "Qwen/Qwen3-VL-Embedding-8B"
+    assert info["revision"] == "deadbeef"
+    # the MRL width the vector was truncated and re-normalized to
+    assert info["dim"] == fake.dim
+    # whether cosine reduces to a dot product
+    assert info["normalize"] is True
+    # the sampling budget a video query has to match
+    assert info["fps"] == 1.0
+    assert info["max_frames"] == 64
+    assert info["max_length"] == 8192
+
+
+def test_stamped_prompt_is_the_instruction_actually_used(monkeypatch):
+    # an embedding model conditions on its instruction, so a query embedded under a
+    # different one lands elsewhere -- the resolved value has to travel with the vector
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 12.0)
+
+    default = _make_tagger_with_fake(_FakeEmbedder()).tag("v.mp4")[0].additional_info
+    # no prompt set -> the embedder's default, not None
+    assert default["prompt"] == "Represent the user's input."
+
+    custom = _make_tagger_with_fake(
+        _FakeEmbedder(), prompt="Represent the video."
+    ).tag("v.mp4")[0].additional_info
+    assert custom["prompt"] == "Represent the video."
+
+
+def test_stamped_normalize_resolves_the_none_sentinel(monkeypatch):
+    # normalize=None means "normalize"; stamping None would leave a consumer guessing
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 12.0)
+
+    assert _make_tagger_with_fake(
+        _FakeEmbedder(), normalize=None
+    ).tag("v.mp4")[0].additional_info["normalize"] is True
+    assert _make_tagger_with_fake(
+        _FakeEmbedder(), normalize=False
+    ).tag("v.mp4")[0].additional_info["normalize"] is False
+
+
+def test_stamped_max_frames_is_the_post_clamp_value(monkeypatch):
+    # the embedder clamps max_frames to the video token budget, so the requested value
+    # is not necessarily the one the vector was produced with
+    fake = _FakeEmbedder()
+    fake.max_frames = 16  # what the clamp settled on
+    tagger = _make_tagger_with_fake(fake)
+    tagger.max_frames = 100_000  # what was asked for
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 12.0)
+
+    assert tagger.tag("v.mp4")[0].additional_info["max_frames"] == 16
+
+
+def test_tag_declares_its_own_kind_and_the_supported_query_modes(monkeypatch):
+    fake = _FakeEmbedder()
+    tagger = _make_tagger_with_fake(fake)
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 12.0)
+
+    info = tagger.tag("v.mp4")[0].additional_info
+
+    # what the vector IS. It cannot be inferred from the timestamps here: an
+    # unsegmented whole-video tag carries start == end == 0, which reads as an instant.
+    assert info["kind"] == "video"
+    # what a query MAY be: a unified multimodal embedder, so all three
+    assert info["query_modes"] == ["text", "image", "video"]
+
+
+def test_every_segment_is_stamped_and_owns_its_copy(monkeypatch):
+    # 25s / 10s segments -> 3 tags, each self-describing, none aliasing another
+    fake = _FakeEmbedder()
+    tagger = _make_tagger_with_fake(fake, segment_length_s=10.0)
+    monkeypatch.setattr("embedding.model.get_duration", lambda p: 25.0)
+
+    tags = tagger.tag("v.mp4")
+
+    assert len(tags) == 3
+    assert all(t.additional_info["embedder"] == "Qwen/Qwen3-VL-Embedding-8B" for t in tags)
+    infos = [t.additional_info for t in tags]
+    assert all(a is not b for a, b in zip(infos, infos[1:]))
+    # and the modes list is a copy, so a consumer mutating one cannot move the constant
+    assert infos[0]["query_modes"] == QUERY_MODES
+    assert infos[0]["query_modes"] is not QUERY_MODES
 
 
 # -------------------- dtype auto-selection (constructor) --------------------

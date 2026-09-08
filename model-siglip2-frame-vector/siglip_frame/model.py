@@ -21,6 +21,13 @@ DEFAULT_MODEL_ID = "google/siglip2-base-patch16-naflex"
 # Embed the whole frame, so every vector is anchored to the full image in normalized coordinates.
 _WHOLE_FRAME_BOX = {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0}
 
+# Query modalities the checkpoint above can embed INTO this space, stamped on every tag so a
+# downstream search UI knows which query kinds an index accepts: text via the checkpoint's
+# text tower, image via the same vision tower used here. Declared, not measured -- this
+# tagger only ever loads the vision tower -- so pointing `model_id` at a different
+# checkpoint means revisiting this list.
+QUERY_MODES = ["text", "image"]
+
 
 class FeatureExtractor(FrameModel):
     """Embeds each video frame (formatted as (H, W, 3) uint8 RGB) into a single search
@@ -65,10 +72,47 @@ class FeatureExtractor(FrameModel):
         ).to(self.device)
         self.model.eval()
 
+        # stamped on every tag; see _embedder_info
+        self.model_id = model_id
+        self.revision = revision
+        # read from the loaded checkpoint rather than hardcoded (768 for -base)
+        self.dim = int(self.model.config.hidden_size)
+
     def tag_frame(self, img: np.ndarray) -> List[FrameTag]:
         vec = self._embed_frame(img)
         # dict(...) so each tag owns its box (the module constant is never shared/mutated).
-        return [FrameTag(tag="", vector=vec.tolist(), box=dict(_WHOLE_FRAME_BOX))]
+        return [FrameTag(
+            tag="",
+            vector=vec.tolist(),
+            box=dict(_WHOLE_FRAME_BOX),
+            additional_info=self._embedder_info(),
+        )]
+
+    def _embedder_info(self) -> Dict:
+        """The embedding recipe, stamped on every tag so a query can be embedded into the
+        same space after the fact, and so a checkpoint or budget change is visible rather
+        than silent.
+
+        Every key here changes the vector, so a query that does not match on all of them
+        is not comparable to what is indexed: `embedder`+`revision` identify the exact hub
+        snapshot (the text tower of the same checkpoint is what embeds a text query),
+        `dim` is the emitted width, `normalize` says whether cosine reduces to a dot
+        product, and `max_num_patches` is the NaFlex resolution budget an image query has
+        to be preprocessed at.
+
+        `kind` is what the vector IS (this tagger embeds whole frames), so a consumer reads
+        it instead of inferring the modality from which positional fields happen to be set.
+        `query_modes` is what a query MAY be -- see the module constant."""
+        return {
+            "embedder": self.model_id,
+            "revision": self.revision,
+            "dim": self.dim,
+            "normalize": self.config.normalize,
+            "max_num_patches": self.config.max_num_patches,
+            "kind": "frame",
+            # list(...) so no tag aliases the module constant
+            "query_modes": list(QUERY_MODES),
+        }
 
     def _embed_frame(self, img: np.ndarray) -> np.ndarray:
         inputs = self._preprocess(img)

@@ -49,6 +49,35 @@ The default is to vectorize the entirety of the video without segmenting, yieldi
 | `normalize`| `None` | whether the output vector(s) should be L2-normalized for cosine similarity; default is to normalize |
 | `segment_length_s`    | `None`    | segment duration (s); `null` embeds the whole video as one window |
 
+## Vector metadata (`additional_info`)
+
+Every emitted tag carries the embedding recipe, so a **downstream query can be embedded
+into the same space** without the index having to record which model built it (it doesn't —
+`GET /indexes/{qid}` returns only `{qid, vector_size}`). Same `embedder`/`dim` convention as
+the sibling vector taggers (`model-detection`, `model-celeb-vector`).
+
+| key | example | why a query has to match it |
+|-----|---------|------------------------------|
+| `embedder` | `Qwen/Qwen3-VL-Embedding-8B` | the checkpoint |
+| `revision` | `2c456551…` | the exact hub commit, so "the same model" really is the same weights |
+| `dim` | `1024` | the MRL width the vector was truncated **and re-normalized** to |
+| `normalize` | `true` | whether cosine reduces to a dot product. Resolved, never the `None` sentinel |
+| `prompt` | `Represent the user's input.` | the instruction the input was embedded under. An embedding model *conditions* on it, so a query embedded under a different one lands elsewhere |
+| `fps` | `1.0` | frame sampling rate — part of the budget a **video** query has to match |
+| `max_frames` | `64` | the **effective** cap, after the embedder's token-budget clamp (`_clamp_max_frames`), i.e. what the vector was really produced with |
+| `max_length` | `8192` | token sequence length; the one sampling key a **text** query also shares |
+| `kind` | `video` | what the vector *is*. It cannot be inferred from the timestamps: an unsegmented whole-video tag carries `start_time == end_time == 0` |
+| `query_modes` | `["text", "image", "video"]` | which query kinds this space accepts — all three, since `format_model_input` pools text, image and video off the same text tower. Declared for the checkpoint above, so an `embedder_id` swap means revisiting `QUERY_MODES` in `embedding/model.py` |
+
+`query_modes` gates *which* queries to offer, not *how* to embed one — the query-side code
+still keys off `embedder`, because the instruction + chat-template path is model-specific.
+
+**Where it does and does not travel.** A vectorstore search row is a fixed schema —
+`id, qid, start_time, end_time, frame_idx, track, source, index_id, tag, tag_id, vector` —
+with no free-form metadata field, so this rides on the **tag record** (the JSONL here, and
+the fabric/tagstore tag the runtime writes from it), not on a `/search` result. A consumer
+reads it once per content object rather than per row.
+
 ## Build
 
 Same flow as the other `model-*` taggers (requires podman with the NVIDIA
