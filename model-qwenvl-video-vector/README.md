@@ -38,6 +38,12 @@ fixed `max_frames` across an 8-hour file yields ~1 frame every several minutes.
 So the video can be split into fixed-length segments (configurable by the user with the parameter **segment_length_s**); each segment is embedded over its own time window (dense frame sampling, bounded memory), and the per-segment vectors are output as a list of `Tag` with `vector` field tags.  
 The default is to vectorize the entirety of the video without segmenting, yielding a list of one `Tag` with `vector` tag spanning the whole video duration.
 
+**Timestamps.** Every emitted tag carries the window it was embedded over, in ms relative to
+the input file: a segmented run emits `[start_ms, end_ms]` per segment, and an unsegmented run
+emits the one window it used — `start_time = 0`, `end_time = duration`. So the tag always spans
+real media rather than reading as an instant, and modality does not have to be stamped
+separately for a consumer to tell a video window from a frame.
+
 ## Runtime parameters (`--params` JSON)
 
 | param                 | default | meaning                                                        |
@@ -45,7 +51,7 @@ The default is to vectorize the entirety of the video without segmenting, yieldi
 | `fps`                 | `1`     | frame sampling rate (Hz) within each embedded window           |
 | `max_frames`          | `64`    | max frames Qwen samples per window (bounds memory/compute)     |
 | `max_length`          | `8192`  | max token sequence length for the embedder                     |
-| `prompt`| `None` | the instruction used by the model to embed the video; default is "Represent the user's input" |
+| `prompt`| `None` | the instruction used by the model to embed the video (if different instructions are used, the embeddings may not be comparable in the same index); default is "Represent the user's input" |
 | `normalize`| `None` | whether the output vector(s) should be L2-normalized for cosine similarity; default is to normalize |
 | `segment_length_s`    | `None`    | segment duration (s); `null` embeds the whole video as one window |
 
@@ -66,7 +72,6 @@ the sibling vector taggers (`model-detection`, `model-celeb-vector`).
 | `fps` | `1.0` | frame sampling rate — part of the budget a **video** query has to match |
 | `max_frames` | `64` | the **effective** cap, after the embedder's token-budget clamp (`_clamp_max_frames`), i.e. what the vector was really produced with |
 | `max_length` | `8192` | token sequence length; the one sampling key a **text** query also shares |
-| `kind` | `video` | what the vector *is*. It cannot be inferred from the timestamps: an unsegmented whole-video tag carries `start_time == end_time == 0` |
 | `query_modes` | `["text", "image", "video"]` | which query kinds this space accepts — all three, since `format_model_input` pools text, image and video off the same text tower. Declared for the checkpoint above, so an `embedder_id` swap means revisiting `QUERY_MODES` in `embedding/model.py` |
 
 `query_modes` gates *which* queries to offer, not *how* to embed one — the query-side code
@@ -101,6 +106,48 @@ cache at `HF_HOME=/root/.cache`. This is unlike the baked-weight taggers (`model
 persistent volume at `/root/.cache`** (a named volume or a host bind mount). Without it,
 the weights land in the container's ephemeral writable layer and are lost on `--rm`,
 forcing a full ~16GB re-download on **every** container start.
+
+## Run
+
+The image's `ENTRYPOINT` is `run.py` (the stdin→JSONL tagging daemon): media paths arrive
+**on stdin** (not argv), `--output-path` is required, and every runtime tunable from the table
+above is passed as a **single JSON object** to `--params`.
+
+```bash
+echo /elv/test/USfootball10s.mp4 | podman run --rm -i \
+    --volume="$(pwd)/test-files:/elv/test:ro" \
+    --volume="$(pwd)/test-output:/elv/tags:U" \
+    --volume=hf_cache:/root/.cache \
+    --device nvidia.com/gpu=0 \
+    qwen3vl-embedding-video-vector \
+    --output-path /elv/tags/out.jsonl \
+    --params '{"fps": 1, "max_frames": 64, "max_length": 8192}'
+```
+
+### Passing a `prompt` (the embedding instruction)
+
+`prompt` is a `--params` field like any other; it is the instruction the embedder
+**conditions on**, and it defaults to Qwen's own `"Represent the user's input."` when omitted.
+Quote the JSON in **single** quotes so the inner double quotes reach `run.py` intact:
+
+```bash
+echo /elv/test/NBA4s.mp4 | podman run --rm -i \
+    --volume="$(pwd)/test-files:/elv/test:ro" \
+    --volume="$(pwd)/test-output:/elv/tags:U" \
+    --volume=hf_cache:/root/.cache \
+    --device nvidia.com/gpu=0 \
+    qwen3vl-embedding-video-vector \
+    --output-path /elv/tags/out.jsonl \
+    --params '{"fps": 1, "segment_length_s": 30, "prompt": "Represent the video for retrieval, emphasizing the sport being played and the on-court action."}'
+```
+
+`test.sh` takes the same value as an env override, e.g.
+`PROMPT="Represent the video for retrieval." SEGMENT_LENGTH_S=30 ./test.sh`.
+
+The instruction moves the vector, so **one index must be built under one instruction**: a
+query embedded under a different one lands elsewhere in the space. The resolved value (custom
+or default) is stamped into every tag's `additional_info.prompt` for exactly that reason — see
+the **Vector metadata** table above.
 
 ## Tests
 

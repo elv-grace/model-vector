@@ -6,9 +6,10 @@
 # tunables are RuntimeConfig fields in run.py, injected as one --params JSON string:
 #
 #   ./test.sh                                          # defaults: fps=1, max_frames=64, max_length=8192, whole-video
-#   FPS=5 SEGMENT_LENGTH_S=30 ./test.sh                # override any subset of or all four parameters
+#   FPS=5 SEGMENT_LENGTH_S=30 ./test.sh                # override any subset of or all five parameters
 #   MAX_FRAMES=32 MAX_LENGTH=4096 ./test.sh             (memory/context)
 #   FPS=5 MAX_FRAMES=192 MAX_LENGTH=24576 SEGMENT_LENGTH_S=30 ./test.sh
+#   PROMPT="Represent the video for retrieval." ./test.sh   # the embedding instruction
 #
 # File paths are fed on STDIN (run_default reads stdin, not argv), --output-path is
 # required, and the hf_cache named volume is mounted at HF_HOME (=/root/.cache, set in
@@ -23,16 +24,23 @@ FPS="${FPS:-1}"
 MAX_FRAMES="${MAX_FRAMES:-64}"
 MAX_LENGTH="${MAX_LENGTH:-8192}"
 SEGMENT_LENGTH_S="${SEGMENT_LENGTH_S:-}"   # empty => whole video (model default)
+PROMPT="${PROMPT:-}"                       # empty => the embedder's default instruction
 
 : "${ELV_MODEL_TEST_GPU_TO_USE:=3}"
 IMAGE_NAME="${IMAGE_NAME:-qwen3vl-embedding-video-vector}"
 
 cd "$(dirname "$0")"
 
-# Build the --params JSON; include segment_length_s only when set.
+# Build the --params JSON; include segment_length_s and prompt only when set.
 PARAMS="{\"fps\": ${FPS}, \"max_frames\": ${MAX_FRAMES}, \"max_length\": ${MAX_LENGTH}"
 if [ -n "$SEGMENT_LENGTH_S" ]; then
     PARAMS="${PARAMS}, \"segment_length_s\": ${SEGMENT_LENGTH_S}"
+fi
+if [ -n "$PROMPT" ]; then
+    # escape backslashes, then double quotes, so the instruction stays one JSON string
+    esc="${PROMPT//\\/\\\\}"
+    esc="${esc//\"/\\\"}"
+    PARAMS="${PARAMS}, \"prompt\": \"${esc}\""
 fi
 PARAMS="${PARAMS}}"
 

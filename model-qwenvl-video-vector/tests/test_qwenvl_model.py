@@ -152,8 +152,9 @@ def test_tag_whole_video_single_window(monkeypatch):
     v = tags[0]
     assert isinstance(v, Tag) and v.vector is not None
     assert v.frame_info is None
-    assert v.start_time == 0 # start = end = 0 when just 1 window (whole video)
-    assert v.end_time == 0  # because tagger should align when run on full content
+    # the whole-video tag spans the media, so it does not read as an instant at 0
+    assert v.start_time == 0
+    assert v.end_time == 12_000
     assert len(v.vector) == fake.dim
     # the single window spans [0, duration] and is passed to the embedder in seconds
     item = fake.calls[0]["inputs"][0]
@@ -263,18 +264,18 @@ def test_stamped_max_frames_is_the_post_clamp_value(monkeypatch):
     assert tagger.tag("v.mp4")[0].additional_info["max_frames"] == 16
 
 
-def test_tag_declares_its_own_kind_and_the_supported_query_modes(monkeypatch):
+def test_tag_declares_the_supported_query_modes(monkeypatch):
     fake = _FakeEmbedder()
     tagger = _make_tagger_with_fake(fake)
     monkeypatch.setattr("embedding.model.get_duration", lambda p: 12.0)
 
     info = tagger.tag("v.mp4")[0].additional_info
 
-    # what the vector IS. It cannot be inferred from the timestamps here: an
-    # unsegmented whole-video tag carries start == end == 0, which reads as an instant.
-    assert info["kind"] == "video"
     # what a query MAY be: a unified multimodal embedder, so all three
     assert info["query_modes"] == ["text", "image", "video"]
+    # modality is NOT stamped: every tag this tagger emits is a video window, and the
+    # timestamps now say so -- a whole-video tag spans [0, duration], not [0, 0]
+    assert "kind" not in info
 
 
 def test_every_segment_is_stamped_and_owns_its_copy(monkeypatch):
@@ -424,6 +425,8 @@ def test_tag_subframe_trailing_remainder_folds_into_previous(monkeypatch):
     # one merged window is embedded (the tail is not a second segment)
     assert len(tags) == 1
     assert len(fake.calls) == 1
+    # and the surviving tag spans the whole media, tail included
+    assert (tags[0].start_time, tags[0].end_time) == (0, 30_030)
     # asserted on the embedder call (the window), since that is what the fold changes:
     # the single window spans the whole media [0, 30.03s].
     item = fake.calls[0]["inputs"][0]
@@ -460,7 +463,7 @@ def test_tag_segment_length_ge_duration_collapses_to_one_window(monkeypatch):
     tags = tagger.tag("v.mp4")
 
     assert len(tags) == 1
-    assert (tags[0].start_time, tags[0].end_time) == (0, 0)
+    assert (tags[0].start_time, tags[0].end_time) == (0, 12_000)
     assert len(fake.calls) == 1
 
 
@@ -480,7 +483,9 @@ def test_end_to_end_one_vector_per_video():
     v = tags[0]
     assert isinstance(v, Tag) and v.vector is not None
     assert v.frame_info is None
+    # spans the media rather than reading as an instant at 0
     assert v.start_time == 0
+    assert v.end_time > 0
     # MRL-truncated from the checkpoint's native 4096 to the configured width
     assert len(v.vector) == 1024
     # normalized -- tolerance is loose because the model runs in bfloat16 on

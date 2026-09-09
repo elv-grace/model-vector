@@ -98,9 +98,6 @@ class QwenVLVideoEmbedder(AVModel):
         is where the token-budget clamp (`_clamp_max_frames`) has been applied -- these are
         the values the vector was actually produced with.
 
-        `kind` is what the vector IS (this tagger embeds video windows), so a consumer reads
-        it instead of inferring the modality from which positional fields happen to be set --
-        which fails here, because an unsegmented whole-video tag carries start == end == 0.
         `query_modes` is what a query MAY be -- see the module constant."""
         return {
             "embedder": self.model_id,
@@ -112,7 +109,6 @@ class QwenVLVideoEmbedder(AVModel):
             "fps": self.fps,
             "max_frames": self.embedder.max_frames,
             "max_length": self.embedder.max_length,
-            "kind": "video",
             # list(...) so no tag aliases the module constant
             "query_modes": list(QUERY_MODES),
         }
@@ -171,8 +167,8 @@ class QwenVLVideoEmbedder(AVModel):
             # _embed_video already applied `self.normalize`, so segment vectors are
             # normalized (or raw) as requested -- emit them as-is.
             segment_vecs.append(vec)
-            # if no segmenting (just one vector) -> start and end time 0, else -> actual timestamps
-            st, et = (0, 0) if single_window else (start_ms, end_ms)
+            # if no segmenting (just one vector) -> start 0 and end time duration_ms, else -> actual timestamps
+            st, et = (0, duration_ms) if single_window else (start_ms, end_ms)
             out.append(Tag(
                 tag="",
                 vector=vec.tolist(),
